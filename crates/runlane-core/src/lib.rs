@@ -3,6 +3,7 @@
 //! This crate intentionally contains no network, database, or OS-specific code.
 
 pub mod analyzer;
+pub mod approval;
 pub mod fleet;
 pub mod runtime;
 
@@ -1551,6 +1552,18 @@ pub enum AuditEventKind {
         approval_id: String,
         actor: String,
         outcome: ApprovalOutcome,
+    },
+    ApprovalRequested {
+        approval_id: String,
+        proposal_id: String,
+        action_id: String,
+    },
+    ApprovalExpired {
+        approval_id: String,
+    },
+    ApprovalSuperseded {
+        approval_id: String,
+        superseded_by: String,
     },
     ActionResult {
         action: ActionKind,

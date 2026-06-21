@@ -1,6 +1,6 @@
 use std::{env, process};
 
-use runlane_core::fleet::FleetRepository;
+use runlane_core::{approval::demo_approval_store, fleet::FleetRepository};
 
 fn main() {
     if let Err(error) = run(env::args().skip(1).collect()) {
@@ -31,13 +31,77 @@ fn run(args: Vec<String>) -> Result<(), String> {
             print_fleet_summary("server gitops sync ok", &repository);
             Ok(())
         }
+        [approval, list] if approval == "approval" && list == "list" => {
+            let store = demo_approval_store();
+            for record in store.list_pending() {
+                println!(
+                    "{} {} {:?} {} expires_at={}",
+                    record.id,
+                    record.action_id,
+                    record.action,
+                    record.target.resource_id,
+                    record.expires_at_unix_seconds
+                );
+            }
+            Ok(())
+        }
+        [approval, show, id] if approval == "approval" && show == "show" => {
+            let store = demo_approval_store();
+            let record = store
+                .show(id)
+                .ok_or_else(|| format!("unknown approval: {id}"))?;
+            println!(
+                "id: {}\nrun: {}\nproposal: {}\naction: {}\nlayer: {:?}\ntarget: {}\nlease: {:?}\nrequired_checks: {}\nskipped_checks: {}",
+                record.id,
+                record.run_id,
+                record.proposal_id,
+                record.action_id,
+                record.layer,
+                record.target.resource_id,
+                record.lease_request.mode,
+                record.verification.required.len(),
+                record.verification.skipped.len()
+            );
+            Ok(())
+        }
+        [approval, approve, id] if approval == "approval" && approve == "approve" => {
+            let mut store = demo_approval_store();
+            let action_id = store
+                .show(id)
+                .ok_or_else(|| format!("unknown approval: {id}"))?
+                .action_id
+                .clone();
+            let claims = store
+                .approve(
+                    id,
+                    &action_id,
+                    "cli-operator",
+                    150,
+                    "allow-prod-web-sshd-restart",
+                    "cli-lease-nonce",
+                )
+                .map_err(|error| format!("approval failed: {error:?}"))?;
+            println!(
+                "approved: {}\nlease_id: {}\naction: {:?}\ntarget: {}",
+                id, claims.lease_id, claims.action, claims.target.resource_id
+            );
+            Ok(())
+        }
+        [approval, reject, id] if approval == "approval" && reject == "reject" => {
+            let mut store = demo_approval_store();
+            store
+                .reject(id, "cli-operator", 150)
+                .map_err(|error| format!("rejection failed: {error:?}"))?;
+            println!("rejected: {id}");
+            Ok(())
+        }
         _ => Err(format!("unsupported runlane command: {}", args.join(" "))),
     }
 }
 
 fn print_help() {
     println!(
-        "runlane commands:\n  runlane fleet validate <path>\n  runlane server gitops sync <path>"
+        "runlane commands:\n  runlane fleet validate <path>\n  runlane server gitops sync <path>\n  runlane approval list\n  runlane approval show <id>\n  runlane approval approve <id>\n  runlane approval reject <id>"
     );
 }
 

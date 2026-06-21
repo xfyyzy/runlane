@@ -204,6 +204,14 @@ cargo run -p runlane-server -- demo-control-plane
 cargo run -p runlane-agent -- demo-enroll-pull
 ```
 
+Inspect the deterministic approval boundary:
+
+```bash
+cargo run -p runlane -- approval list
+cargo run -p runlane -- approval show approval-demo-1
+cargo run -p runlane -- approval approve approval-demo-1
+```
+
 ## License
 
 BSD-2-Clause — see [`LICENSE`](LICENSE).

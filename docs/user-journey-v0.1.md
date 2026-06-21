@@ -278,6 +278,18 @@ The approval surface must show:
 Approving a proposal is a runtime state transition. It is not a chat side
 effect.
 
+The current CLI-safe boundary exposes the deterministic demo approval through:
+
+```bash
+cargo run -p runlane -- approval list
+cargo run -p runlane -- approval show approval-demo-1
+cargo run -p runlane -- approval approve approval-demo-1
+cargo run -p runlane -- approval reject approval-demo-1
+```
+
+Approval binds the stored proposal action. The approve command does not accept
+a replacement action, target, impact set, or lease mode.
+
 ### 5. Lease
 
 The server issues a short-lived signed capability lease scoped to:
@@ -357,6 +369,8 @@ runlane-agent enroll
 runlane-agent run
 runlane incident create
 runlane incident show
+runlane approval list
+runlane approval show
 runlane approval approve
 runlane approval reject
 runlane receipt show
