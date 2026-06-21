@@ -147,16 +147,17 @@ crates/
 
 Read in this order before implementing:
 
-1. [`docs/project-charter.md`](docs/project-charter.md)
-2. [`docs/product-definition.md`](docs/product-definition.md)
-3. [`docs/operational-layer-model.md`](docs/operational-layer-model.md)
-4. [`docs/architecture.md`](docs/architecture.md)
-5. [`docs/execution-semantics.md`](docs/execution-semantics.md)
-6. [`docs/platform-model.md`](docs/platform-model.md)
-7. [`docs/coding-agent-brief.md`](docs/coding-agent-brief.md)
-8. [`docs/dogfood-system-scenarios.md`](docs/dogfood-system-scenarios.md)
-9. [`docs/milestones/v0.1.md`](docs/milestones/v0.1.md)
-10. [`docs/adr/0001-cross-platform-native-agent.md`](docs/adr/0001-cross-platform-native-agent.md)
+1. [`AGENTS.md`](AGENTS.md)
+2. [`docs/project-charter.md`](docs/project-charter.md)
+3. [`docs/product-definition.md`](docs/product-definition.md)
+4. [`docs/operational-layer-model.md`](docs/operational-layer-model.md)
+5. [`docs/architecture.md`](docs/architecture.md)
+6. [`docs/execution-semantics.md`](docs/execution-semantics.md)
+7. [`docs/platform-model.md`](docs/platform-model.md)
+8. [`docs/coding-agent-brief.md`](docs/coding-agent-brief.md)
+9. [`docs/dogfood-system-scenarios.md`](docs/dogfood-system-scenarios.md)
+10. [`docs/milestones/v0.1.md`](docs/milestones/v0.1.md)
+11. [`docs/adr/0001-cross-platform-native-agent.md`](docs/adr/0001-cross-platform-native-agent.md)
 
 ## Development
 

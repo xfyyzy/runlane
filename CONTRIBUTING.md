@@ -4,12 +4,15 @@ Runlane is currently in project-definition and v0.1 kernel-design stage.
 
 Before implementing, read:
 
-1. `docs/project-charter.md`
-2. `docs/product-definition.md`
-3. `docs/operational-layer-model.md`
-4. `docs/execution-semantics.md`
-5. `docs/platform-model.md`
-6. `docs/coding-agent-brief.md`
+1. `AGENTS.md`
+2. `docs/project-charter.md`
+3. `docs/product-definition.md`
+4. `docs/operational-layer-model.md`
+5. `docs/execution-semantics.md`
+6. `docs/platform-model.md`
+7. `docs/coding-agent-brief.md`
+
+`AGENTS.md` defines the repository execution rules for human-supervised agents: no silent fallback, explicit failure, single-path convergence, prompt commits, tmux for long-running tasks, and verifiable handoff.
 
 ## Toolchain requirement
 

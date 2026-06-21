@@ -17,6 +17,7 @@ body:
       label: Required reading
       description: Which docs must be read before implementation?
       value: |
+        - AGENTS.md
         - docs/coding-agent-brief.md
         - docs/operational-layer-model.md
         - docs/execution-semantics.md

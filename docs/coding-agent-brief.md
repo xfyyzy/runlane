@@ -29,16 +29,17 @@ The goal is not to build a generic agent framework. The goal is to make real mac
 
 Read these in order:
 
-1. `README.md`
-2. `docs/project-charter.md`
-3. `docs/product-definition.md`
-4. `docs/operational-layer-model.md`
-5. `docs/architecture.md`
-6. `docs/execution-semantics.md`
-7. `docs/platform-model.md`
-8. `docs/workspace-structure.md`
-9. `docs/milestones/v0.1.md`
-10. `docs/adr/0001-cross-platform-native-agent.md`
+1. `AGENTS.md`
+2. `README.md`
+3. `docs/project-charter.md`
+4. `docs/product-definition.md`
+5. `docs/operational-layer-model.md`
+6. `docs/architecture.md`
+7. `docs/execution-semantics.md`
+8. `docs/platform-model.md`
+9. `docs/workspace-structure.md`
+10. `docs/milestones/v0.1.md`
+11. `docs/adr/0001-cross-platform-native-agent.md`
 
 Do not implement from memory or from generic agent-platform assumptions.
 
