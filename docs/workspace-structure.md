@@ -139,6 +139,9 @@ For v0.1, `runlane-server` and `runlane-agent` can expose CLI subcommands direct
 - Use fake platform backends in CI.
 - Run real Linux backend in CI.
 - Run FreeBSD/OpenBSD backend checks manually or via VM later.
+- Treat build/runtime version mismatch as an environment failure, not an
+  application behavior. Do not accept a cross-built artifact as validated for a
+  different OS release unless that compatibility target is explicitly recorded.
 
 ## Release targets
 
@@ -146,7 +149,26 @@ Initial release artifacts:
 
 - `x86_64-unknown-linux-musl` for Linux;
 - `aarch64-unknown-linux-musl` if needed;
-- FreeBSD x86_64 native binary;
-- OpenBSD x86_64 native binary.
+- FreeBSD x86_64 binary built and tested against the same current stable
+  FreeBSD release;
+- OpenBSD x86_64 binary built and tested in a native OpenBSD environment.
 
-Do not promise fully static BSD binaries until verified. BSD native distribution is acceptable.
+Do not promise fully static BSD binaries until verified for the specific
+release target. BSD native distribution is acceptable.
+
+### OpenBSD validation exception
+
+OpenBSD remains a first-class v0.1 platform, but it is not treated as a
+Linux-hosted cross-compilation target by default.
+
+The reason is toolchain-specific: stable Rust can list
+`x86_64-unknown-openbsd`, but rustup does not currently provide an installable
+standard library for that target in the same way it does for Linux and FreeBSD.
+Using nightly `-Zbuild-std` would weaken the project's stable-toolchain rule,
+and using an older OpenBSD Rust package would violate the workspace MSRV.
+
+Therefore OpenBSD work must be validated in a native OpenBSD VM with a Rust
+toolchain that satisfies `rust-version = "1.96"`. If the VM needs an
+environment-specific exception to obtain that Rust version, record it as an
+environment fact and do not present it as the general project path for
+contributors.

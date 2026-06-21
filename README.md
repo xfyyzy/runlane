@@ -170,6 +170,15 @@ cargo check --workspace
 cargo test --workspace
 ```
 
+Cross-platform validation must keep build and runtime baselines aligned. Linux
+and FreeBSD release artifacts may be cross-built when the target sysroot and
+test VM use the same current stable OS release. OpenBSD is the exception:
+because the stable Rust toolchain does not currently provide an installable
+`x86_64-unknown-openbsd` standard library through rustup, OpenBSD validation is
+performed inside a native OpenBSD VM with a Rust toolchain that satisfies the
+project MSRV. Do not treat nightly `-Zbuild-std`, an older OpenBSD Rust package,
+or a Linux-hosted OpenBSD cross build as the default project path.
+
 ## License
 
 BSD-2-Clause — see [`LICENSE`](LICENSE).

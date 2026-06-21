@@ -26,6 +26,11 @@ This means:
 6. Tests use fixture outputs from all three OS families.
 7. Additional Unix-like platforms can be added by implementing backend driver families rather than changing the core runbook model.
 
+This does not mean every platform must have the same build mechanism. Linux and
+FreeBSD may use cross builds when the target sysroot and runtime VM are aligned.
+OpenBSD validation uses a native OpenBSD VM under the stable Rust MSRV unless a
+stable, reproducible OpenBSD cross toolchain is explicitly introduced later.
+
 ## Consequences
 
 ### Positive
