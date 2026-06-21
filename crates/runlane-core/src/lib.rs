@@ -336,6 +336,14 @@ impl VerificationPlan {
         self.skipped = skipped.into_iter().collect();
         self
     }
+
+    /// Returns true when every skipped verification has an audit-ready reason.
+    #[must_use]
+    pub fn skipped_checks_have_reasons(&self) -> bool {
+        self.skipped
+            .iter()
+            .all(|skipped| !skipped.reason.trim().is_empty())
+    }
 }
 
 /// High-level lifecycle for an incident run.
@@ -442,6 +450,215 @@ pub enum ActionKind {
     ServiceReload,
     RunAllowlistedScript,
     RemoveAllowlistedFile,
+}
+
+/// Policy toggles used by the impact-scoped verification planner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerificationPolicy {
+    pub require_dependent_app_canary_for_platform: bool,
+    pub require_broad_package_audit_for_system_package_mutation: bool,
+}
+
+impl VerificationPolicy {
+    /// Creates a conservative default v0.1 verification policy.
+    #[must_use]
+    pub const fn conservative() -> Self {
+        Self {
+            require_dependent_app_canary_for_platform: true,
+            require_broad_package_audit_for_system_package_mutation: true,
+        }
+    }
+
+    /// Creates a minimal policy useful for low-risk tests and demos.
+    #[must_use]
+    pub const fn minimal() -> Self {
+        Self {
+            require_dependent_app_canary_for_platform: false,
+            require_broad_package_audit_for_system_package_mutation: false,
+        }
+    }
+}
+
+/// Selects verification checks from action, operational layer, impact, and policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerificationPlanner {
+    pub policy: VerificationPolicy,
+}
+
+impl VerificationPlanner {
+    /// Creates a planner with a policy.
+    #[must_use]
+    pub const fn new(policy: VerificationPolicy) -> Self {
+        Self { policy }
+    }
+
+    /// Plans verification for a typed action and impact set.
+    #[must_use]
+    pub fn plan(&self, action: &ActionKind, impact: &ImpactSet) -> VerificationPlan {
+        match (impact.layer, action) {
+            (
+                OperationalLayer::Application,
+                ActionKind::ServiceRestart | ActionKind::ServiceReload,
+            ) => self.plan_application_service_change(action, impact),
+            (OperationalLayer::Platform, ActionKind::ServiceReload) => {
+                self.plan_platform_reload(impact)
+            }
+            (OperationalLayer::System, _)
+                if impact
+                    .writes
+                    .iter()
+                    .any(|resource| resource.contains("package-db")) =>
+            {
+                self.plan_system_package_mutation(impact)
+            }
+            (_, ActionKind::ServiceRestart | ActionKind::ServiceReload) => {
+                self.plan_generic_service_change(action, impact)
+            }
+            _ => self.plan_generic_typed_action(impact),
+        }
+    }
+
+    fn plan_application_service_change(
+        &self,
+        action: &ActionKind,
+        impact: &ImpactSet,
+    ) -> VerificationPlan {
+        let mut plan = self.plan_generic_service_change(action, impact);
+        plan.skipped.extend([
+            SkippedVerification::new(
+                "package_audit",
+                "application service change did not mutate system package database",
+            ),
+            SkippedVerification::new(
+                "full_disk_scan",
+                "application service change did not mutate filesystem allocation",
+            ),
+            SkippedVerification::new(
+                "firewall_audit",
+                "application service change did not mutate firewall rules",
+            ),
+        ]);
+        plan
+    }
+
+    fn plan_platform_reload(&self, impact: &ImpactSet) -> VerificationPlan {
+        let mut required = vec![VerificationCheck::new(
+            "config_syntax_valid",
+            primary_resource(impact),
+            VerificationTier::Precondition,
+        )];
+        required.push(VerificationCheck::new(
+            "platform_accepts_connections",
+            primary_resource(impact),
+            VerificationTier::DirectImpact,
+        ));
+        if self.policy.require_dependent_app_canary_for_platform {
+            required.push(VerificationCheck::new(
+                "dependent_app_canary",
+                dependent_resource(impact),
+                VerificationTier::Dependent,
+            ));
+        }
+
+        VerificationPlan {
+            required,
+            conditional: Vec::new(),
+            skipped: vec![SkippedVerification::new(
+                "full_package_audit",
+                "platform config reload did not mutate system package database",
+            )],
+        }
+    }
+
+    fn plan_system_package_mutation(&self, impact: &ImpactSet) -> VerificationPlan {
+        let mut required = vec![
+            VerificationCheck::new(
+                "package_db_consistent",
+                primary_resource(impact),
+                VerificationTier::DirectImpact,
+            ),
+            VerificationCheck::new(
+                "changed_files_classified",
+                primary_resource(impact),
+                VerificationTier::DirectImpact,
+            ),
+            VerificationCheck::new(
+                "affected_services_identified",
+                primary_resource(impact),
+                VerificationTier::Dependent,
+            ),
+        ];
+        if self
+            .policy
+            .require_broad_package_audit_for_system_package_mutation
+        {
+            required.push(VerificationCheck::new(
+                "package_audit",
+                primary_resource(impact),
+                VerificationTier::BroadRegression,
+            ));
+        }
+
+        VerificationPlan {
+            required,
+            conditional: vec![VerificationCheck::new(
+                "service_health_for_affected_services",
+                dependent_resource(impact),
+                VerificationTier::Dependent,
+            )],
+            skipped: vec![SkippedVerification::new(
+                "full_disk_scan",
+                "package mutation classified changed files without broad filesystem writes",
+            )],
+        }
+    }
+
+    fn plan_generic_service_change(
+        &self,
+        action: &ActionKind,
+        impact: &ImpactSet,
+    ) -> VerificationPlan {
+        let direct_check = match action {
+            ActionKind::ServiceReload => "service_reloaded",
+            _ => "service_active",
+        };
+        VerificationPlan::required([
+            VerificationCheck::new(
+                "helper_result_matches_request",
+                primary_resource(impact),
+                VerificationTier::DirectImpact,
+            ),
+            VerificationCheck::new(
+                direct_check,
+                primary_resource(impact),
+                VerificationTier::DirectImpact,
+            ),
+        ])
+    }
+
+    fn plan_generic_typed_action(&self, impact: &ImpactSet) -> VerificationPlan {
+        VerificationPlan::required([VerificationCheck::new(
+            "helper_result_matches_request",
+            primary_resource(impact),
+            VerificationTier::DirectImpact,
+        )])
+    }
+}
+
+fn primary_resource(impact: &ImpactSet) -> String {
+    impact
+        .writes
+        .first()
+        .cloned()
+        .unwrap_or_else(|| format!("{:?}:unknown", impact.layer))
+}
+
+fn dependent_resource(impact: &ImpactSet) -> String {
+    impact
+        .may_affect
+        .first()
+        .cloned()
+        .unwrap_or_else(|| primary_resource(impact))
 }
 
 /// Target bound to a typed helper action.
@@ -1185,7 +1402,8 @@ mod tests {
         Capability, CapabilityFailure, CapabilityReport, ImpactSet, LeaseMode, OperatingSystem,
         OperationalLayer, Resource, ResourceKind, ResourceLease, ResourceScope, Run, RunState,
         SkippedVerification, Task, UnsupportedCapability, VerificationCheck, VerificationPlan,
-        VerificationTier, is_valid_run_transition, validate_helper_request,
+        VerificationPlanner, VerificationPolicy, VerificationTier, is_valid_run_transition,
+        validate_helper_request,
     };
 
     #[test]
@@ -1427,6 +1645,81 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn verification_planner_keeps_application_restart_narrow() {
+        let impact = ImpactSet::writes(
+            OperationalLayer::Application,
+            ["application:blog/service".to_owned()],
+        )
+        .with_does_not_affect([
+            "system:node/prod-web-01/package-db".to_owned(),
+            "system:node/prod-web-01/firewall".to_owned(),
+        ]);
+
+        let plan = VerificationPlanner::new(VerificationPolicy::conservative())
+            .plan(&ActionKind::ServiceRestart, &impact);
+
+        assert!(
+            plan.required
+                .iter()
+                .any(|check| check.id == "service_active")
+        );
+        assert!(
+            plan.skipped
+                .iter()
+                .any(|skipped| skipped.check_id == "package_audit")
+        );
+        assert!(
+            plan.skipped
+                .iter()
+                .any(|skipped| skipped.check_id == "full_disk_scan")
+        );
+        assert!(plan.skipped_checks_have_reasons());
+    }
+
+    #[test]
+    fn verification_planner_can_select_broader_system_package_checks() {
+        let impact = ImpactSet::writes(
+            OperationalLayer::System,
+            ["system:node/prod-web-01/package-db".to_owned()],
+        )
+        .with_may_affect(["application:on-node/prod-web-01".to_owned()]);
+
+        let plan = VerificationPlanner::new(VerificationPolicy::conservative())
+            .plan(&ActionKind::RunAllowlistedScript, &impact);
+
+        assert!(
+            plan.required.iter().any(|check| check.id == "package_audit"
+                && check.tier == VerificationTier::BroadRegression)
+        );
+        assert!(
+            plan.required
+                .iter()
+                .any(|check| check.id == "affected_services_identified")
+        );
+        assert!(plan.skipped_checks_have_reasons());
+    }
+
+    #[test]
+    fn verification_planner_selects_platform_dependent_canary_when_policy_requires() {
+        let impact = ImpactSet::writes(
+            OperationalLayer::Platform,
+            ["platform:gateway/nginx-main/config".to_owned()],
+        )
+        .with_may_affect(["application:depends-on/gateway/nginx-main".to_owned()]);
+
+        let plan = VerificationPlanner::new(VerificationPolicy::conservative())
+            .plan(&ActionKind::ServiceReload, &impact);
+
+        assert!(
+            plan.required
+                .iter()
+                .any(|check| check.id == "dependent_app_canary"
+                    && check.tier == VerificationTier::Dependent)
+        );
+        assert!(plan.skipped_checks_have_reasons());
     }
 
     #[test]
