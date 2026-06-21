@@ -32,6 +32,18 @@ It fails closed when the required native service manager, log reader, process
 snapshot, storage snapshot, or signed helper capability is missing. OpenBSD is
 not modeled as a systemd target.
 
+The agent backend now exposes CI-safe collector specs and parser fixtures for:
+
+- service status;
+- recent logs;
+- disk snapshot;
+- process snapshot;
+- listening sockets.
+
+Command construction is owned by the platform backend. Runbooks and analyzer
+output select typed capabilities and resources; they do not supply shell
+commands.
+
 Resources:
 
 - `system:node/<node>/service/<service>`;

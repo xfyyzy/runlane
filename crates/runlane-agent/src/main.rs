@@ -2,7 +2,7 @@ mod platform;
 
 use std::env;
 
-use platform::{NativeBackend, PlatformBackend};
+use platform::{EvidenceKind, NativeBackend, PlatformBackend};
 use runlane_core::{
     AgentTaskEnvelope, Capability,
     runtime::{
@@ -19,17 +19,26 @@ fn main() {
     let backend = NativeBackend::current();
     let report = backend.capability_report("local-node");
     let fixture_stub_count = backend.parser_fixture_stubs().len();
+    let collector_count = backend.collector_specs().len();
+    let service_fixture_probe_ok = backend
+        .collect_fixture(
+            EvidenceKind::ServiceStatus,
+            service_status_fixture(backend.os()),
+        )
+        .is_ok();
     let capability_probe_ok = report
         .capabilities
         .first()
         .is_some_and(|capability| backend.require_capability(capability).is_ok());
     println!(
-        "runlane-agent skeleton; detected_os={:?}; capabilities={}; unsupported={}; fixture_stubs={}; capability_probe_ok={}",
+        "runlane-agent skeleton; detected_os={:?}; capabilities={}; unsupported={}; fixture_stubs={}; collectors={}; capability_probe_ok={}; service_fixture_probe_ok={}",
         report.os,
         report.capabilities.len(),
         report.unsupported.len(),
         fixture_stub_count,
-        capability_probe_ok
+        collector_count,
+        capability_probe_ok,
+        service_fixture_probe_ok
     );
 }
 
@@ -86,4 +95,19 @@ fn demo_enroll_pull() {
         pulled.envelope.task_id,
         pulled.payload
     );
+}
+
+fn service_status_fixture(os: runlane_core::OperatingSystem) -> &'static str {
+    match os {
+        runlane_core::OperatingSystem::Linux => {
+            include_str!("../fixtures/linux/systemctl-status.txt")
+        }
+        runlane_core::OperatingSystem::FreeBsd => {
+            include_str!("../fixtures/freebsd/service-status.txt")
+        }
+        runlane_core::OperatingSystem::OpenBsd => {
+            include_str!("../fixtures/openbsd/rcctl-check.txt")
+        }
+        _ => "",
+    }
 }

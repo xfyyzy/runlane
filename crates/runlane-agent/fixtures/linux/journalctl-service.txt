@@ -1,0 +1,2 @@
+Jun 22 10:00:00 prod-web-01 sshd[4242]: Server listening on 0.0.0.0 port 22.
+Jun 22 10:01:00 prod-web-01 sshd[4242]: Accepted publickey for runlane.

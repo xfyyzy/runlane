@@ -1,0 +1,2 @@
+USER     CMD          PID   FD MOUNT      INUM MODE         R/W    SZ|DV
+root     sshd        4242    3* internet stream tcp 0x0 *:22
