@@ -168,7 +168,4 @@ cargo test --workspace
 
 ## License
 
-Dual-licensed under either of:
-
-- Apache License, Version 2.0
-- MIT license
+BSD-2-Clause — see [`LICENSE`](LICENSE).
