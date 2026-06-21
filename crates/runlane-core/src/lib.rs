@@ -2,6 +2,8 @@
 //!
 //! This crate intentionally contains no network, database, or OS-specific code.
 
+use std::collections::BTreeMap;
+
 /// Operational layer of a resource, task, runbook, or policy rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OperationalLayer {
@@ -22,6 +24,129 @@ pub enum OperatingSystem {
     Solaris,
     Illumos,
     Unknown,
+}
+
+/// Fleet intent overlay tier. Later tiers override earlier tiers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FleetOverlayTier {
+    Global,
+    Os(OperatingSystem),
+    Layer(OperationalLayer),
+    Role(String),
+    Environment(String),
+    Node(String),
+}
+
+impl FleetOverlayTier {
+    /// Returns the overlay rank for global -> OS -> layer -> role -> environment -> node.
+    #[must_use]
+    pub const fn rank(&self) -> u8 {
+        match self {
+            Self::Global => 0,
+            Self::Os(_) => 1,
+            Self::Layer(_) => 2,
+            Self::Role(_) => 3,
+            Self::Environment(_) => 4,
+            Self::Node(_) => 5,
+        }
+    }
+}
+
+/// One desired-intent setting from the fleet repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetIntentSetting {
+    pub key: String,
+    pub value: String,
+}
+
+impl FleetIntentSetting {
+    /// Creates a fleet intent setting.
+    #[must_use]
+    pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+}
+
+/// Overlay fragment loaded from one fleet-repo layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetOverlayFragment {
+    pub tier: FleetOverlayTier,
+    pub settings: Vec<FleetIntentSetting>,
+}
+
+impl FleetOverlayFragment {
+    /// Creates a fleet overlay fragment.
+    #[must_use]
+    pub fn new(
+        tier: FleetOverlayTier,
+        settings: impl IntoIterator<Item = FleetIntentSetting>,
+    ) -> Self {
+        Self {
+            tier,
+            settings: settings.into_iter().collect(),
+        }
+    }
+}
+
+/// Resolved desired intent for one node or node group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedFleetIntent {
+    pub settings: Vec<FleetIntentSetting>,
+}
+
+impl ResolvedFleetIntent {
+    /// Returns a resolved setting value.
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.settings
+            .iter()
+            .find(|setting| setting.key == key)
+            .map(|setting| setting.value.as_str())
+    }
+}
+
+/// Declares an operational layer in fleet intent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetLayerDeclaration {
+    pub layer: OperationalLayer,
+    pub selector: String,
+}
+
+impl FleetLayerDeclaration {
+    /// Creates a layer declaration for a fleet schema object.
+    #[must_use]
+    pub fn new(layer: OperationalLayer, selector: impl Into<String>) -> Self {
+        Self {
+            layer,
+            selector: selector.into(),
+        }
+    }
+}
+
+/// Resolves fleet overlays using global -> OS -> layer -> role -> environment -> node order.
+#[must_use]
+pub fn resolve_fleet_overlays(
+    fragments: impl IntoIterator<Item = FleetOverlayFragment>,
+) -> ResolvedFleetIntent {
+    let mut fragments: Vec<FleetOverlayFragment> = fragments.into_iter().collect();
+    fragments.sort_by_key(|fragment| fragment.tier.rank());
+
+    let mut resolved = BTreeMap::new();
+    for fragment in fragments {
+        for setting in fragment.settings {
+            resolved.insert(setting.key, setting.value);
+        }
+    }
+
+    ResolvedFleetIntent {
+        settings: resolved
+            .into_iter()
+            .map(|(key, value)| FleetIntentSetting { key, value })
+            .collect(),
+    }
 }
 
 /// Technical shape of a resource.
@@ -1780,12 +1905,14 @@ mod tests {
     use super::{
         AgentProtocolContext, AgentResultStatus, AgentResultSubmission, AgentTaskEnvelope,
         AgentTaskRejection, AuditAppendError, AuditEvent, AuditEventKind, AuditLedger, Capability,
-        CapabilityFailure, CapabilityReport, CognitiveReceipt, EvidenceEnvelope, ImpactSet,
-        LeaseMode, LocalSpoolItem, OperatingSystem, OperationalLayer, Resource, ResourceKind,
-        ResourceLease, ResourceScope, Run, RunState, SkippedVerification, SpoolReason, Task,
-        UnsupportedCapability, VerificationCheck, VerificationPlan, VerificationPlanner,
-        VerificationPolicy, VerificationTier, is_valid_run_transition,
-        validate_agent_task_envelope, validate_helper_request,
+        CapabilityFailure, CapabilityReport, CognitiveReceipt, EvidenceEnvelope,
+        FleetIntentSetting, FleetLayerDeclaration, FleetOverlayFragment, FleetOverlayTier,
+        ImpactSet, LeaseMode, LocalSpoolItem, OperatingSystem, OperationalLayer,
+        ResolvedFleetIntent, Resource, ResourceKind, ResourceLease, ResourceScope, Run, RunState,
+        SkippedVerification, SpoolReason, Task, UnsupportedCapability, VerificationCheck,
+        VerificationPlan, VerificationPlanner, VerificationPolicy, VerificationTier,
+        is_valid_run_transition, resolve_fleet_overlays, validate_agent_task_envelope,
+        validate_helper_request,
     };
 
     #[test]
@@ -1852,6 +1979,87 @@ mod tests {
                 OperationalLayer::Application,
             ]
         );
+    }
+
+    #[test]
+    fn fleet_overlay_resolution_uses_declared_order() {
+        let resolved = resolve_fleet_overlays([
+            FleetOverlayFragment::new(
+                FleetOverlayTier::Node("prod-web-01".to_owned()),
+                [
+                    FleetIntentSetting::new("policy.profile", "node-production"),
+                    FleetIntentSetting::new("runbook.service-unhealthy.approval", "required"),
+                ],
+            ),
+            FleetOverlayFragment::new(
+                FleetOverlayTier::Global,
+                [
+                    FleetIntentSetting::new("policy.profile", "baseline"),
+                    FleetIntentSetting::new("verification.tier3.default", "false"),
+                ],
+            ),
+            FleetOverlayFragment::new(
+                FleetOverlayTier::Os(OperatingSystem::Linux),
+                [FleetIntentSetting::new("service.driver", "systemd")],
+            ),
+            FleetOverlayFragment::new(
+                FleetOverlayTier::Layer(OperationalLayer::System),
+                [FleetIntentSetting::new(
+                    "verification.tier3.default",
+                    "true",
+                )],
+            ),
+            FleetOverlayFragment::new(
+                FleetOverlayTier::Role("web".to_owned()),
+                [FleetIntentSetting::new(
+                    "runbook.service-unhealthy.approval",
+                    "conditional",
+                )],
+            ),
+            FleetOverlayFragment::new(
+                FleetOverlayTier::Environment("prod".to_owned()),
+                [FleetIntentSetting::new("policy.profile", "production")],
+            ),
+        ]);
+
+        assert_eq!(resolved.get("service.driver"), Some("systemd"));
+        assert_eq!(resolved.get("verification.tier3.default"), Some("true"));
+        assert_eq!(resolved.get("policy.profile"), Some("node-production"));
+        assert_eq!(
+            resolved.get("runbook.service-unhealthy.approval"),
+            Some("required")
+        );
+    }
+
+    #[test]
+    fn fleet_schema_can_declare_all_operational_layers() {
+        let declarations = [
+            FleetLayerDeclaration::new(OperationalLayer::System, "labels.runlane.io/layer=system"),
+            FleetLayerDeclaration::new(
+                OperationalLayer::Platform,
+                "labels.runlane.io/layer=platform",
+            ),
+            FleetLayerDeclaration::new(
+                OperationalLayer::Application,
+                "labels.runlane.io/layer=application",
+            ),
+        ];
+
+        let resolved = ResolvedFleetIntent {
+            settings: declarations
+                .iter()
+                .map(|declaration| {
+                    FleetIntentSetting::new(
+                        format!("layer.{:?}.selector", declaration.layer),
+                        declaration.selector.clone(),
+                    )
+                })
+                .collect(),
+        };
+
+        assert!(resolved.get("layer.System.selector").is_some());
+        assert!(resolved.get("layer.Platform.selector").is_some());
+        assert!(resolved.get("layer.Application.selector").is_some());
     }
 
     #[test]

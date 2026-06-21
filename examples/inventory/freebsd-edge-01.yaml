@@ -6,6 +6,12 @@ labels:
   runlane.io/role: edge
   runlane.io/provider: home-lab
   runlane.io/layer-primary: system
+layers:
+  primary: system
+  supports:
+    - system
+    - platform
+    - application
 capabilities:
   requested:
     - os.freebsd

@@ -5,6 +5,12 @@ labels:
   runlane.io/env: prod
   runlane.io/role: edge
   runlane.io/layer-primary: system
+layers:
+  primary: system
+  supports:
+    - system
+    - platform
+    - application
 capabilities:
   requested:
     - os.openbsd

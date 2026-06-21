@@ -6,6 +6,12 @@ labels:
   runlane.io/role: web
   runlane.io/provider: hetzner
   runlane.io/layer-primary: system
+layers:
+  primary: system
+  supports:
+    - system
+    - platform
+    - application
 capabilities:
   requested:
     - os.linux
