@@ -75,6 +75,7 @@ name = "runlane-helper"
 version = "0.1.0"
 dependencies = [
  "runlane-core",
+ "serde_yaml",
 ]
 
 [[package]]

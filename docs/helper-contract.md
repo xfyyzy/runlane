@@ -25,6 +25,22 @@ permit nopass runlane as root cmd /usr/local/libexec/runlane-helper
 These rules do not allow arbitrary shell. They only allow invocation of the
 helper, which still fails closed unless every lease and allowlist check passes.
 
+The executable entrypoint is explicit:
+
+```bash
+runlane-helper execute \
+  --lease-file lease.yaml \
+  --request-file request.yaml \
+  --allowlist-file allowlist.yaml \
+  --node-id prod-web-01 \
+  --now 1780000000 \
+  --dry-run
+```
+
+`--dry-run` validates the full typed boundary and returns structured success
+without mutating the developer machine. Non-dry-run host mutation is not
+implemented until real service restart execution is introduced deliberately.
+
 ## Lease Claims
 
 A signed capability lease binds all of these fields:
@@ -35,9 +51,8 @@ run_id: run-123
 approval_id: approval-123
 node_id: prod-web-01
 action: service.restart
-target:
-  resource_id: system:node/prod-web-01/service/sshd
-  subject: sshd
+target_resource_id: system:node/prod-web-01/service/sshd
+target_subject: sshd
 allowlist_entry_id: allow-sshd-restart
 expires_at_unix_seconds: 1780000000
 nonce: 4e4f7d0f-lease-nonce
@@ -48,7 +63,9 @@ The signature envelope carries:
 ```yaml
 key_id: server-signing-key-1
 signature: <opaque signature bytes>
+signature_status: valid
 claims: <claims above>
+seen_nonces: []
 ```
 
 The helper cryptographic layer verifies the signature before claim validation.
@@ -75,12 +92,10 @@ The request is typed data:
 ```yaml
 lease_id: lease-123
 action: service.restart
-target:
-  resource_id: system:node/prod-web-01/service/sshd
-  subject: sshd
+target_resource_id: system:node/prod-web-01/service/sshd
+target_subject: sshd
 arguments:
-  - name: service
-    value: sshd
+  service: sshd
 ```
 
 There is no shell command field. A script action, if allowed later, must use a
@@ -92,7 +107,10 @@ The response is structured:
 
 ```yaml
 status: succeeded
-message: service restart requested
+action: service.restart
+target: system:node/prod-web-01/service/sshd
+dry_run: true
+message: validated typed service.restart without mutating host
 ```
 
 The agent reports this result to the server. The server records it in the

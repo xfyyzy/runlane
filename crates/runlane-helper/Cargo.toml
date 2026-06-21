@@ -9,6 +9,7 @@ authors.workspace = true
 
 [dependencies]
 runlane-core = { path = "../runlane-core" }
+serde_yaml = { workspace = true }
 
 [lints]
 workspace = true
