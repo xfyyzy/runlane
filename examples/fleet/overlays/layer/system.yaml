@@ -1,0 +1,5 @@
+tier: layer
+name: system
+settings:
+  approval.system.service.restart: required
+  runbook.service-unhealthy.layer: system

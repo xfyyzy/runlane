@@ -1,0 +1,13 @@
+id: system-service-demo
+layers:
+  primary: system
+runbooks:
+  enabled:
+    - service-unhealthy
+policies:
+  profile: production
+allowlists:
+  enabled:
+    - allow-prod-web-sshd-restart
+    - allow-freebsd-edge-sshd-restart
+    - allow-openbsd-edge-sshd-restart

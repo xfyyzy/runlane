@@ -1,0 +1,13 @@
+id: production
+approval:
+  diagnostics:
+    collect.more_logs: not_required
+  system:
+    service.restart: required
+    service.reload: required
+verification:
+  tier3:
+    default: false
+helper:
+  require_signed_lease: true
+  reject_replay: true

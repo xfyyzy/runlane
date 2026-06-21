@@ -2,6 +2,8 @@
 //!
 //! This crate intentionally contains no network, database, or OS-specific code.
 
+pub mod fleet;
+
 use std::collections::BTreeMap;
 
 /// Operational layer of a resource, task, runbook, or policy rule.

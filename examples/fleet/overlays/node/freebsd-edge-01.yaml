@@ -1,0 +1,5 @@
+tier: node
+name: freebsd-edge-01
+settings:
+  policy.profile: production
+  helper.allowlist.service.restart: allow-freebsd-edge-sshd-restart

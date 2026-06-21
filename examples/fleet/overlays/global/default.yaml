@@ -1,0 +1,4 @@
+tier: global
+settings:
+  policy.profile: baseline
+  verification.tier3.default: "false"

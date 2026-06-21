@@ -1,0 +1,5 @@
+tier: environment
+name: prod
+settings:
+  policy.profile: production
+  approval.mode: human

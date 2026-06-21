@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/runlane",
     "crates/runlane-core",
     "crates/runlane-agent",
     "crates/runlane-server",
@@ -21,3 +22,7 @@ unsafe_code = "forbid"
 pedantic = { level = "warn", priority = -1 }
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"

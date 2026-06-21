@@ -1,0 +1,5 @@
+tier: os
+name: freebsd
+settings:
+  service.driver: freebsd-rc
+  logs.driver: syslog-file

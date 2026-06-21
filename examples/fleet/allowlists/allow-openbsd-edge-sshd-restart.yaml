@@ -1,0 +1,3 @@
+id: allow-openbsd-edge-sshd-restart
+action: service.restart
+target_resource_id: system:node/openbsd-edge-01/service/sshd

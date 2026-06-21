@@ -1,0 +1,27 @@
+id: freebsd-edge-01
+hostname: freebsd-edge-01.example.internal
+os: freebsd
+labels:
+  runlane.io/env: prod
+  runlane.io/role: edge
+  runlane.io/provider: home-lab
+  runlane.io/layer-primary: system
+layers:
+  primary: system
+  supports:
+    - system
+    - platform
+    - application
+capabilities:
+  requested:
+    - os.freebsd
+    - service.freebsd-rc
+    - logs.syslog-file
+    - process.procstat
+    - socket.sockstat
+    - storage.df
+    - storage.zfs
+    - firewall.pf
+    - privilege.sudo-helper
+policy:
+  profile: production

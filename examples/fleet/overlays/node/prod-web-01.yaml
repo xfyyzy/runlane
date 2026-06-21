@@ -1,0 +1,5 @@
+tier: node
+name: prod-web-01
+settings:
+  policy.profile: production
+  helper.allowlist.service.restart: allow-prod-web-sshd-restart

@@ -1,0 +1,5 @@
+tier: os
+name: linux
+settings:
+  service.driver: systemd
+  logs.driver: journald

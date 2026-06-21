@@ -183,6 +183,20 @@ performed inside a native OpenBSD VM with a Rust toolchain that satisfies the
 project MSRV. Do not treat nightly `-Zbuild-std`, an older OpenBSD Rust package,
 or a Linux-hosted OpenBSD cross build as the default project path.
 
+## Fleet Fixture
+
+The executable v0.1 fleet fixture lives in [`examples/fleet`](examples/fleet).
+It contains Linux, FreeBSD, and OpenBSD inventory plus the
+`service-unhealthy` runbook, production policy, narrow helper allowlists, and
+deterministic overlays.
+
+Validate desired intent without writing runtime truth back to Git:
+
+```bash
+cargo run -p runlane -- fleet validate examples/fleet
+cargo run -p runlane -- server gitops sync examples/fleet
+```
+
 ## License
 
 BSD-2-Clause — see [`LICENSE`](LICENSE).

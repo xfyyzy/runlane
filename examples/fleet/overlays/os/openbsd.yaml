@@ -1,0 +1,5 @@
+tier: os
+name: openbsd
+settings:
+  service.driver: openbsd-rcctl
+  logs.driver: syslog-file

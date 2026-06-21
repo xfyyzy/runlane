@@ -1,0 +1,25 @@
+id: prod-web-01
+hostname: prod-web-01.example.internal
+os: linux
+labels:
+  runlane.io/env: prod
+  runlane.io/role: web
+  runlane.io/provider: hetzner
+  runlane.io/layer-primary: system
+layers:
+  primary: system
+  supports:
+    - system
+    - platform
+    - application
+capabilities:
+  requested:
+    - os.linux
+    - service.systemd
+    - logs.journald
+    - process.procfs
+    - socket.ss
+    - storage.df
+    - privilege.sudo-helper
+policy:
+  profile: production

@@ -1,0 +1,5 @@
+tier: role
+name: edge
+settings:
+  runbook.service-unhealthy.enabled: "true"
+  service.target.default: sshd

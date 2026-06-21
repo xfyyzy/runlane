@@ -154,3 +154,24 @@ Do not write these high-churn runtime facts to the fleet repo:
 - cognitive receipts.
 
 The server ledger owns those facts. Git owns desired intent.
+
+## Validation And Sync
+
+The v0.1 example fleet lives in `examples/fleet` and follows the layout above.
+
+Validate desired intent locally:
+
+```bash
+cargo run -p runlane -- fleet validate examples/fleet
+```
+
+Produce the same server-ingestable desired-intent summary through the control
+plane sync boundary:
+
+```bash
+cargo run -p runlane -- server gitops sync examples/fleet
+```
+
+Both commands reject invalid layer names, unknown required capabilities,
+malformed resource ids, and runtime truth fields such as evidence, approvals,
+helper output, audit events, results, receipts, or other runtime state.

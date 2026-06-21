@@ -1,0 +1,97 @@
+name: service-unhealthy
+version: 0.1.0
+summary: Diagnose an unhealthy system service and optionally restart it after approval.
+layer: system
+
+select:
+  labels:
+    runlane.io/layer-primary: system
+
+parameters:
+  node:
+    type: string
+    required: true
+  service:
+    type: string
+    required: true
+
+resources:
+  reads:
+    - system:node/{{ node }}/service/{{ service }}
+    - system:node/{{ node }}/logs/{{ service }}
+    - system:node/{{ node }}/filesystem
+    - system:node/{{ node }}/processes
+  writes:
+    - system:node/{{ node }}/service/{{ service }}
+  conflicts:
+    - system:node/{{ node }}/reboot
+    - system:node/{{ node }}/package-db
+
+collect:
+  - id: service_status
+    capability_any:
+      - service.systemd
+      - service.freebsd-rc
+      - service.openbsd-rcctl
+    with:
+      service: "{{ service }}"
+
+  - id: recent_logs
+    capability_any:
+      - logs.journald
+      - logs.syslog-file
+    with:
+      service: "{{ service }}"
+      since: 30m
+      max_lines: 300
+
+  - id: disk_snapshot
+    capability: storage.df
+
+  - id: process_snapshot
+    capability_any:
+      - process.procfs
+      - process.procstat
+      - process.ps
+
+analyze:
+  mode: structured_proposal
+  allowed_actions:
+    - service.restart
+    - service.reload
+    - collect.more_logs
+
+policy:
+  require_approval:
+    - service.restart
+    - service.reload
+
+recover:
+  - id: restart_service
+    layer: system
+    action: service.restart
+    with:
+      service: "{{ service }}"
+    lease:
+      resource: system:node/{{ node }}/service/{{ service }}
+      mode: exclusive
+    approval: required
+    impact:
+      writes:
+        - system:node/{{ node }}/service/{{ service }}
+      may_affect:
+        - platform:on-node/{{ node }}
+        - application:on-node/{{ node }}
+      does_not_affect:
+        - system:node/{{ node }}/package-db
+        - system:node/{{ node }}/firewall
+    verify:
+      strategy: layer_impact_scoped
+      required:
+        - check: service_active
+          resource: system:node/{{ node }}/service/{{ service }}
+      skipped_with_reason:
+        - check: package_audit
+          reason: service restart did not mutate package database
+        - check: firewall_audit
+          reason: service restart did not mutate firewall rules
