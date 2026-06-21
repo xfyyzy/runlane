@@ -410,6 +410,213 @@ pub struct CapabilityReport {
     pub unsupported: Vec<UnsupportedCapability>,
 }
 
+/// Enrolled agent identity used by the pull protocol.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentIdentity {
+    pub node_id: String,
+    pub certificate_fingerprint: String,
+}
+
+impl AgentIdentity {
+    /// Creates an agent identity.
+    #[must_use]
+    pub fn new(node_id: impl Into<String>, certificate_fingerprint: impl Into<String>) -> Self {
+        Self {
+            node_id: node_id.into(),
+            certificate_fingerprint: certificate_fingerprint.into(),
+        }
+    }
+}
+
+/// Task envelope pulled by an agent from the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentTaskEnvelope {
+    pub envelope_id: String,
+    pub run_id: String,
+    pub task_id: String,
+    pub node_id: String,
+    pub issued_at_unix_seconds: u64,
+    pub expires_at_unix_seconds: u64,
+    pub nonce: String,
+    pub required_capabilities: Vec<Capability>,
+    pub audit_correlation_id: String,
+}
+
+impl AgentTaskEnvelope {
+    /// Creates an agent task envelope.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        envelope_id: impl Into<String>,
+        run_id: impl Into<String>,
+        task_id: impl Into<String>,
+        node_id: impl Into<String>,
+        issued_at_unix_seconds: u64,
+        expires_at_unix_seconds: u64,
+        nonce: impl Into<String>,
+        required_capabilities: impl IntoIterator<Item = Capability>,
+        audit_correlation_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            envelope_id: envelope_id.into(),
+            run_id: run_id.into(),
+            task_id: task_id.into(),
+            node_id: node_id.into(),
+            issued_at_unix_seconds,
+            expires_at_unix_seconds,
+            nonce: nonce.into(),
+            required_capabilities: required_capabilities.into_iter().collect(),
+            audit_correlation_id: audit_correlation_id.into(),
+        }
+    }
+}
+
+/// Agent protocol validation context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentProtocolContext {
+    pub node_id: String,
+    pub now_unix_seconds: u64,
+    pub seen_nonces: Vec<String>,
+}
+
+impl AgentProtocolContext {
+    /// Creates agent protocol validation context.
+    #[must_use]
+    pub fn new(
+        node_id: impl Into<String>,
+        now_unix_seconds: u64,
+        seen_nonces: impl IntoIterator<Item = String>,
+    ) -> Self {
+        Self {
+            node_id: node_id.into(),
+            now_unix_seconds,
+            seen_nonces: seen_nonces.into_iter().collect(),
+        }
+    }
+}
+
+/// Accepted pulled task after node, expiry, and replay checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedAgentTask {
+    pub envelope_id: String,
+    pub run_id: String,
+    pub task_id: String,
+    pub audit_correlation_id: String,
+}
+
+/// Fail-closed task envelope rejection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentTaskRejection {
+    NodeMismatch,
+    ExpiredEnvelope,
+    ReplayedNonce,
+}
+
+/// Validates a pulled task envelope before local execution.
+pub fn validate_agent_task_envelope(
+    envelope: &AgentTaskEnvelope,
+    context: &AgentProtocolContext,
+) -> Result<AcceptedAgentTask, AgentTaskRejection> {
+    if envelope.node_id != context.node_id {
+        return Err(AgentTaskRejection::NodeMismatch);
+    }
+    if envelope.expires_at_unix_seconds <= context.now_unix_seconds {
+        return Err(AgentTaskRejection::ExpiredEnvelope);
+    }
+    if context
+        .seen_nonces
+        .iter()
+        .any(|nonce| nonce == &envelope.nonce)
+    {
+        return Err(AgentTaskRejection::ReplayedNonce);
+    }
+
+    Ok(AcceptedAgentTask {
+        envelope_id: envelope.envelope_id.clone(),
+        run_id: envelope.run_id.clone(),
+        task_id: envelope.task_id.clone(),
+        audit_correlation_id: envelope.audit_correlation_id.clone(),
+    })
+}
+
+/// Result status reported by an agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentResultStatus {
+    Succeeded,
+    Failed,
+}
+
+/// Agent result submission shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentResultSubmission {
+    pub envelope_id: String,
+    pub run_id: String,
+    pub task_id: String,
+    pub node_id: String,
+    pub nonce: String,
+    pub status: AgentResultStatus,
+    pub evidence: Vec<EvidenceEnvelope>,
+    pub audit_correlation_id: String,
+}
+
+impl AgentResultSubmission {
+    /// Creates an agent result submission.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        envelope_id: impl Into<String>,
+        run_id: impl Into<String>,
+        task_id: impl Into<String>,
+        node_id: impl Into<String>,
+        nonce: impl Into<String>,
+        status: AgentResultStatus,
+        evidence: impl IntoIterator<Item = EvidenceEnvelope>,
+        audit_correlation_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            envelope_id: envelope_id.into(),
+            run_id: run_id.into(),
+            task_id: task_id.into(),
+            node_id: node_id.into(),
+            nonce: nonce.into(),
+            status,
+            evidence: evidence.into_iter().collect(),
+            audit_correlation_id: audit_correlation_id.into(),
+        }
+    }
+}
+
+/// Why an agent result was spooled locally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpoolReason {
+    ServerUnavailable,
+    SubmissionRejected(String),
+}
+
+/// Local spool item for failed result submission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalSpoolItem {
+    pub spool_id: String,
+    pub reason: SpoolReason,
+    pub result: AgentResultSubmission,
+}
+
+impl LocalSpoolItem {
+    /// Creates a local spool item.
+    #[must_use]
+    pub fn new(
+        spool_id: impl Into<String>,
+        reason: SpoolReason,
+        result: AgentResultSubmission,
+    ) -> Self {
+        Self {
+            spool_id: spool_id.into(),
+            reason,
+            result,
+        }
+    }
+}
+
 impl CapabilityReport {
     /// Creates a capability report.
     #[must_use]
@@ -1571,12 +1778,14 @@ mod tests {
         SchedulerWaitReason, SignedCapabilityLease,
     };
     use super::{
-        AuditAppendError, AuditEvent, AuditEventKind, AuditLedger, Capability, CapabilityFailure,
-        CapabilityReport, CognitiveReceipt, EvidenceEnvelope, ImpactSet, LeaseMode,
-        OperatingSystem, OperationalLayer, Resource, ResourceKind, ResourceLease, ResourceScope,
-        Run, RunState, SkippedVerification, Task, UnsupportedCapability, VerificationCheck,
-        VerificationPlan, VerificationPlanner, VerificationPolicy, VerificationTier,
-        is_valid_run_transition, validate_helper_request,
+        AgentProtocolContext, AgentResultStatus, AgentResultSubmission, AgentTaskEnvelope,
+        AgentTaskRejection, AuditAppendError, AuditEvent, AuditEventKind, AuditLedger, Capability,
+        CapabilityFailure, CapabilityReport, CognitiveReceipt, EvidenceEnvelope, ImpactSet,
+        LeaseMode, LocalSpoolItem, OperatingSystem, OperationalLayer, Resource, ResourceKind,
+        ResourceLease, ResourceScope, Run, RunState, SkippedVerification, SpoolReason, Task,
+        UnsupportedCapability, VerificationCheck, VerificationPlan, VerificationPlanner,
+        VerificationPolicy, VerificationTier, is_valid_run_transition,
+        validate_agent_task_envelope, validate_helper_request,
     };
 
     #[test]
@@ -1915,6 +2124,71 @@ mod tests {
 
         let failure = CapabilityFailure::Unsupported(report.unsupported[0].clone());
         assert!(matches!(failure, CapabilityFailure::Unsupported(_)));
+    }
+
+    #[test]
+    fn agent_task_envelope_validates_node_expiry_and_replay() {
+        let envelope = AgentTaskEnvelope::new(
+            "env-1",
+            "run-1",
+            "task-1",
+            "prod-web-01",
+            100,
+            200,
+            "nonce-1",
+            [Capability::new("service.systemd")],
+            "audit-1",
+        );
+
+        let accepted = validate_agent_task_envelope(
+            &envelope,
+            &AgentProtocolContext::new("prod-web-01", 150, []),
+        )
+        .expect("fresh envelope for matching node should validate");
+        assert_eq!(accepted.audit_correlation_id, "audit-1");
+
+        assert_eq!(
+            validate_agent_task_envelope(
+                &envelope,
+                &AgentProtocolContext::new("other-node", 150, [])
+            ),
+            Err(AgentTaskRejection::NodeMismatch)
+        );
+        assert_eq!(
+            validate_agent_task_envelope(
+                &envelope,
+                &AgentProtocolContext::new("prod-web-01", 250, [])
+            ),
+            Err(AgentTaskRejection::ExpiredEnvelope)
+        );
+        assert_eq!(
+            validate_agent_task_envelope(
+                &envelope,
+                &AgentProtocolContext::new("prod-web-01", 150, ["nonce-1".to_owned()])
+            ),
+            Err(AgentTaskRejection::ReplayedNonce)
+        );
+    }
+
+    #[test]
+    fn failed_result_submission_can_be_spooled_with_audit_metadata() {
+        let result = AgentResultSubmission::new(
+            "env-1",
+            "run-1",
+            "task-1",
+            "prod-web-01",
+            "result-nonce-1",
+            AgentResultStatus::Succeeded,
+            [EvidenceEnvelope::text("service_status", "sshd active")],
+            "audit-1",
+        );
+        let spool_item = LocalSpoolItem::new("spool-1", SpoolReason::ServerUnavailable, result);
+
+        assert_eq!(spool_item.result.run_id, "run-1");
+        assert_eq!(spool_item.result.task_id, "task-1");
+        assert_eq!(spool_item.result.node_id, "prod-web-01");
+        assert_eq!(spool_item.result.audit_correlation_id, "audit-1");
+        assert_eq!(spool_item.result.evidence.len(), 1);
     }
 
     #[test]
