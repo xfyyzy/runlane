@@ -144,6 +144,7 @@ collect:
   - recent_logs
   - disk_snapshot
   - process_snapshot
+  - socket_snapshot
 proposal:
   allowed_actions:
     - service.restart

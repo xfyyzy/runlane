@@ -352,6 +352,14 @@ The final cognitive receipt includes:
 The receipt is stored in the server ledger, not committed back to the fleet
 intent repository.
 
+The current deterministic E2E path exercises the full sequence and emits the
+receipt from audit events:
+
+```bash
+cargo run -p runlane -- demo service-unhealthy examples/fleet
+cargo run -p runlane -- receipt show run-demo-service-unhealthy examples/fleet
+```
+
 ## Minimal v0.1 CLI And API Surface
 
 ### CLI
@@ -373,6 +381,7 @@ runlane approval list
 runlane approval show
 runlane approval approve
 runlane approval reject
+runlane demo service-unhealthy
 runlane receipt show
 ```
 

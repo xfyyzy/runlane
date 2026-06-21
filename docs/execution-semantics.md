@@ -312,3 +312,22 @@ The operator should be able to answer:
 and:
 
 > Why did this task wait instead of running concurrently?
+
+## Receipts Come From The Ledger
+
+The operator-facing cognitive receipt is reconstructed from append-only audit
+events. It must not be hand-written from the happy path.
+
+Required receipt inputs include:
+
+- incident/run identity and target node;
+- evidence collection events;
+- structured proposal event;
+- approval decision;
+- capability lease issuance;
+- helper action result;
+- verification selection and completion;
+- skipped checks with reasons.
+
+Missing required events are explicit receipt-generation errors, not omitted
+sections.

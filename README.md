@@ -212,6 +212,13 @@ cargo run -p runlane -- approval show approval-demo-1
 cargo run -p runlane -- approval approve approval-demo-1
 ```
 
+Run the full CI-safe service-unhealthy simulation and render its receipt:
+
+```bash
+cargo run -p runlane -- demo service-unhealthy examples/fleet
+cargo run -p runlane -- receipt show run-demo-service-unhealthy examples/fleet
+```
+
 ## License
 
 BSD-2-Clause — see [`LICENSE`](LICENSE).

@@ -21,6 +21,7 @@ resources:
     - system:node/{{ node }}/logs/{{ service }}
     - system:node/{{ node }}/filesystem
     - system:node/{{ node }}/processes
+    - system:node/{{ node }}/sockets
   writes:
     - system:node/{{ node }}/service/{{ service }}
   conflicts:
@@ -53,6 +54,12 @@ collect:
       - process.procfs
       - process.procstat
       - process.ps
+
+  - id: socket_snapshot
+    capability_any:
+      - socket.ss
+      - socket.sockstat
+      - socket.fstat
 
 analyze:
   mode: structured_proposal

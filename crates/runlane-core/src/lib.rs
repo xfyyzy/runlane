@@ -4,7 +4,9 @@
 
 pub mod analyzer;
 pub mod approval;
+pub mod e2e;
 pub mod fleet;
+pub mod receipt;
 pub mod runtime;
 
 use std::collections::BTreeMap;
@@ -823,6 +825,7 @@ pub struct ServiceUnhealthyRunbookPlan {
     pub driver: ServiceManagerDriver,
     pub log_capability: Capability,
     pub process_capability: Capability,
+    pub socket_capability: Capability,
     pub privilege_capability: Capability,
     pub run: Run,
 }
@@ -875,6 +878,11 @@ pub fn plan_service_unhealthy_runbook(
         process_capability_for_os(report.os)?,
         "native process snapshot capability is required for service-unhealthy",
     )?;
+    let socket_capability = require_reported_capability(
+        report,
+        socket_capability_for_os(report.os)?,
+        "native socket snapshot capability is required for service-unhealthy",
+    )?;
     let storage_capability = require_reported_capability(
         report,
         "storage.df",
@@ -890,6 +898,7 @@ pub fn plan_service_unhealthy_runbook(
     let log_resource = format!("system:node/{}/logs/{}", request.node_id, request.service);
     let filesystem_resource = format!("system:node/{}/filesystem", request.node_id);
     let process_resource = format!("system:node/{}/processes", request.node_id);
+    let socket_resource = format!("system:node/{}/sockets", request.node_id);
     let package_db_resource = format!("system:node/{}/package-db", request.node_id);
     let firewall_resource = format!("system:node/{}/firewall", request.node_id);
 
@@ -925,6 +934,9 @@ pub fn plan_service_unhealthy_runbook(
     let collect_process = Task::new("collect-process-snapshot", OperationalLayer::System)
         .with_capabilities([process_capability.clone()])
         .with_reads([process_resource]);
+    let collect_socket = Task::new("collect-socket-snapshot", OperationalLayer::System)
+        .with_capabilities([socket_capability.clone()])
+        .with_reads([socket_resource]);
     let restart_service = Task::new("restart-service", OperationalLayer::System)
         .with_capabilities([service_capability, privilege_capability.clone()])
         .with_reads([service_resource.clone()])
@@ -939,6 +951,7 @@ pub fn plan_service_unhealthy_runbook(
             "collect-recent-logs".to_owned(),
             "collect-disk-snapshot".to_owned(),
             "collect-process-snapshot".to_owned(),
+            "collect-socket-snapshot".to_owned(),
         ])
         .with_impact(impact.clone())
         .with_verification(verification.clone());
@@ -956,6 +969,7 @@ pub fn plan_service_unhealthy_runbook(
         collect_logs,
         collect_disk,
         collect_process,
+        collect_socket,
         restart_service,
     ])
     .with_impact(impact)
@@ -965,6 +979,7 @@ pub fn plan_service_unhealthy_runbook(
         driver,
         log_capability,
         process_capability,
+        socket_capability,
         privilege_capability,
         run,
     })
@@ -1000,6 +1015,19 @@ fn process_capability_for_os(
         OperatingSystem::Linux => Ok("process.procfs"),
         OperatingSystem::FreeBsd => Ok("process.procstat"),
         OperatingSystem::OpenBsd => Ok("process.ps"),
+        OperatingSystem::Solaris | OperatingSystem::Illumos | OperatingSystem::Unknown => {
+            Err(ServiceUnhealthyPlanError::UnsupportedOperatingSystem { os })
+        }
+    }
+}
+
+fn socket_capability_for_os(
+    os: OperatingSystem,
+) -> Result<&'static str, ServiceUnhealthyPlanError> {
+    match os {
+        OperatingSystem::Linux => Ok("socket.ss"),
+        OperatingSystem::FreeBsd => Ok("socket.sockstat"),
+        OperatingSystem::OpenBsd => Ok("socket.fstat"),
         OperatingSystem::Solaris | OperatingSystem::Illumos | OperatingSystem::Unknown => {
             Err(ServiceUnhealthyPlanError::UnsupportedOperatingSystem { os })
         }
@@ -1519,6 +1547,26 @@ pub enum AuditEventKind {
     AgentResultSpooled {
         spool_id: String,
         reason: SpoolReason,
+    },
+    IncidentCreated {
+        incident_id: String,
+        node_id: String,
+        runbook: String,
+    },
+    EvidenceCollected {
+        source: String,
+    },
+    ProposalGenerated {
+        proposal_id: String,
+        hypothesis: String,
+    },
+    CapabilityLeaseIssued {
+        lease_id: String,
+        approval_id: String,
+    },
+    VerificationCompleted {
+        check_id: String,
+        resource_id: String,
     },
     RunStateTransition {
         from: RunState,
@@ -2402,12 +2450,14 @@ mod tests {
                         "logs.journald",
                         "process.procfs",
                         "storage.df",
+                        "socket.ss",
                         "privilege.sudo-helper",
                     ],
                 ),
                 ServiceManagerDriver::Systemd,
                 "logs.journald",
                 "process.procfs",
+                "socket.ss",
                 "privilege.sudo-helper",
             ),
             (
@@ -2420,12 +2470,14 @@ mod tests {
                         "logs.syslog-file",
                         "process.procstat",
                         "storage.df",
+                        "socket.sockstat",
                         "privilege.sudo-helper",
                     ],
                 ),
                 ServiceManagerDriver::FreeBsdRc,
                 "logs.syslog-file",
                 "process.procstat",
+                "socket.sockstat",
                 "privilege.sudo-helper",
             ),
             (
@@ -2438,17 +2490,27 @@ mod tests {
                         "logs.syslog-file",
                         "process.ps",
                         "storage.df",
+                        "socket.fstat",
                         "privilege.doas-helper",
                     ],
                 ),
                 ServiceManagerDriver::OpenBsdRcctl,
                 "logs.syslog-file",
                 "process.ps",
+                "socket.fstat",
                 "privilege.doas-helper",
             ),
         ];
 
-        for (report, driver, log_capability, process_capability, privilege_capability) in cases {
+        for (
+            report,
+            driver,
+            log_capability,
+            process_capability,
+            socket_capability,
+            privilege_capability,
+        ) in cases
+        {
             let plan = plan_service_unhealthy_runbook(
                 &ServiceUnhealthyRunbookRequest::new(
                     format!("run-{}", report.node_id),
@@ -2462,12 +2524,13 @@ mod tests {
             assert_eq!(plan.driver, driver);
             assert_eq!(plan.log_capability, Capability::new(log_capability));
             assert_eq!(plan.process_capability, Capability::new(process_capability));
+            assert_eq!(plan.socket_capability, Capability::new(socket_capability));
             assert_eq!(
                 plan.privilege_capability,
                 Capability::new(privilege_capability)
             );
             assert_eq!(plan.run.target_layer, OperationalLayer::System);
-            assert_eq!(plan.run.tasks.len(), 5);
+            assert_eq!(plan.run.tasks.len(), 6);
         }
     }
 
@@ -2481,6 +2544,7 @@ mod tests {
                 "service.openbsd-rcctl",
                 "logs.syslog-file",
                 "process.ps",
+                "socket.fstat",
                 "storage.df",
                 "privilege.doas-helper",
             ],
@@ -2520,6 +2584,7 @@ mod tests {
                 "service.systemd",
                 "logs.journald",
                 "process.procfs",
+                "socket.ss",
                 "storage.df",
                 "privilege.sudo-helper",
             ],
@@ -2595,6 +2660,7 @@ mod tests {
                 "service.freebsd-rc",
                 "logs.syslog-file",
                 "process.procstat",
+                "socket.sockstat",
                 "storage.df",
                 "privilege.sudo-helper",
             ],
@@ -2626,6 +2692,7 @@ mod tests {
                     "service.systemd",
                     "logs.journald",
                     "process.procfs",
+                    "socket.ss",
                     "storage.df",
                     "privilege.sudo-helper",
                 ],

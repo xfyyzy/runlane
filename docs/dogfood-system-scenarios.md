@@ -54,7 +54,16 @@ Resources:
 - `system:node/<node>/service/<service>`;
 - `system:node/<node>/logs/<service>`;
 - `system:node/<node>/filesystem`;
-- `system:node/<node>/processes`.
+- `system:node/<node>/processes`;
+- `system:node/<node>/sockets`.
+
+The CI-safe demo runs the service-unhealthy journey end to end from the fleet
+fixture and emits the ledger-derived receipt:
+
+```bash
+cargo run -p runlane -- demo service-unhealthy examples/fleet
+cargo run -p runlane -- receipt show run-demo-service-unhealthy examples/fleet
+```
 
 Restart lease:
 
