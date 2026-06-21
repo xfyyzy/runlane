@@ -11,9 +11,17 @@ Before implementing, read:
 5. `docs/platform-model.md`
 6. `docs/coding-agent-brief.md`
 
+## Toolchain requirement
+
+Runlane currently requires **Rust stable 1.96.0 or newer**.
+
+- `Cargo.toml` is the source of truth for the minimum supported Rust version: `rust-version = "1.96"`.
+- `rust-toolchain.toml` uses the floating `stable` channel so contributors naturally build with the current stable toolchain.
+
 ## Development checks
 
 ```bash
+rustc --version
 cargo fmt --all -- --check
 cargo check --workspace
 cargo test --workspace

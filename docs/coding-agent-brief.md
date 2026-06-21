@@ -10,7 +10,7 @@ The goal is not to build a generic agent framework. The goal is to make real mac
 
 ## Non-negotiable requirements
 
-1. Rust workspace.
+1. Rust workspace targeting Rust stable 1.96.0 or newer (`rust-version = "1.96"`).
 2. Single-file agent distribution where practical.
 3. Pull-based agent model; no inbound node port required.
 4. Server-agent mTLS with self-signed CA support.

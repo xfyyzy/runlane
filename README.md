@@ -160,7 +160,10 @@ Read in this order before implementing:
 
 ## Development
 
+Runlane currently requires **Rust stable 1.96.0 or newer**. The Cargo MSRV field is set to `rust-version = "1.96"`; `rust-toolchain.toml` uses the floating `stable` channel for local development.
+
 ```bash
+rustc --version
 cargo fmt --all -- --check
 cargo check --workspace
 cargo test --workspace

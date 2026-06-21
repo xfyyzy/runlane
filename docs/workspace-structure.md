@@ -1,5 +1,12 @@
 # Rust Workspace Structure
 
+## Toolchain
+
+Runlane currently uses the latest stable Rust toolchain as the minimum supported Rust version.
+
+- Current MSRV: Rust stable 1.96.0 (`rust-version = "1.96"`).
+- Local toolchain file: `rust-toolchain.toml` with `channel = "stable"`.
+
 ## Workspace
 
 ```text
