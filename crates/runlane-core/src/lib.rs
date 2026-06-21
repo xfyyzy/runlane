@@ -155,6 +155,26 @@ pub struct ResourceLease {
     pub reason: String,
 }
 
+/// Lease a task requests before it can run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceLeaseRequest {
+    pub resource_id: String,
+    pub mode: LeaseMode,
+    pub reason: String,
+}
+
+impl ResourceLeaseRequest {
+    /// Creates a resource lease request.
+    #[must_use]
+    pub fn new(resource_id: impl Into<String>, mode: LeaseMode, reason: impl Into<String>) -> Self {
+        Self {
+            resource_id: resource_id.into(),
+            mode,
+            reason: reason.into(),
+        }
+    }
+}
+
 impl ResourceLease {
     /// Creates a run-scoped resource lease.
     #[must_use]
@@ -755,6 +775,7 @@ pub struct Task {
     pub required_capabilities: Vec<Capability>,
     pub reads: Vec<String>,
     pub writes: Vec<String>,
+    pub lease_requests: Vec<ResourceLeaseRequest>,
     pub dependencies: Vec<String>,
     pub impact: ImpactSet,
     pub verification: VerificationPlan,
@@ -770,6 +791,7 @@ impl Task {
             required_capabilities: Vec::new(),
             reads: Vec::new(),
             writes: Vec::new(),
+            lease_requests: Vec::new(),
             dependencies: Vec::new(),
             impact: ImpactSet::empty(layer),
             verification: VerificationPlan::empty(),
@@ -797,6 +819,16 @@ impl Task {
         self
     }
 
+    /// Adds explicit lease requests.
+    #[must_use]
+    pub fn with_lease_requests(
+        mut self,
+        lease_requests: impl IntoIterator<Item = ResourceLeaseRequest>,
+    ) -> Self {
+        self.lease_requests = lease_requests.into_iter().collect();
+        self
+    }
+
     /// Adds task dependency ids.
     #[must_use]
     pub fn with_dependencies(mut self, dependencies: impl IntoIterator<Item = String>) -> Self {
@@ -816,6 +848,215 @@ impl Task {
     pub fn with_verification(mut self, verification: VerificationPlan) -> Self {
         self.verification = verification;
         self
+    }
+}
+
+/// Explicit dependency path from a lower-layer resource to an upper-layer resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceDependencyPath {
+    pub lower_resource_id: String,
+    pub upper_resource_id: String,
+}
+
+impl ResourceDependencyPath {
+    /// Creates a resource dependency path.
+    #[must_use]
+    pub fn new(lower_resource_id: impl Into<String>, upper_resource_id: impl Into<String>) -> Self {
+        Self {
+            lower_resource_id: lower_resource_id.into(),
+            upper_resource_id: upper_resource_id.into(),
+        }
+    }
+}
+
+/// Why the scheduler allowed a task to run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchedulerRunReason {
+    DependenciesSatisfiedNoConflicts,
+}
+
+/// Why the scheduler made a task wait.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchedulerWaitReason {
+    DependencyIncomplete {
+        dependency_id: String,
+    },
+    ResourceConflict {
+        resource_id: String,
+        existing_lease_id: String,
+        existing_mode: LeaseMode,
+        requested_mode: LeaseMode,
+    },
+    LowerLayerDisruption {
+        lower_resource_id: String,
+        upper_resource_id: String,
+        existing_lease_id: String,
+        existing_mode: LeaseMode,
+    },
+}
+
+/// Scheduler decision for a single task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchedulerDecision {
+    Run {
+        task_id: String,
+        reason: SchedulerRunReason,
+    },
+    Wait {
+        task_id: String,
+        reason: SchedulerWaitReason,
+    },
+}
+
+/// In-memory scheduling snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchedulerSnapshot {
+    pub completed_task_ids: Vec<String>,
+    pub active_leases: Vec<ResourceLease>,
+    pub dependency_paths: Vec<ResourceDependencyPath>,
+}
+
+impl SchedulerSnapshot {
+    /// Creates an empty scheduler snapshot.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            completed_task_ids: Vec::new(),
+            active_leases: Vec::new(),
+            dependency_paths: Vec::new(),
+        }
+    }
+
+    /// Adds completed task ids.
+    #[must_use]
+    pub fn with_completed_tasks(mut self, task_ids: impl IntoIterator<Item = String>) -> Self {
+        self.completed_task_ids = task_ids.into_iter().collect();
+        self
+    }
+
+    /// Adds active leases.
+    #[must_use]
+    pub fn with_active_leases(mut self, leases: impl IntoIterator<Item = ResourceLease>) -> Self {
+        self.active_leases = leases.into_iter().collect();
+        self
+    }
+
+    /// Adds lower-to-upper dependency paths.
+    #[must_use]
+    pub fn with_dependency_paths(
+        mut self,
+        paths: impl IntoIterator<Item = ResourceDependencyPath>,
+    ) -> Self {
+        self.dependency_paths = paths.into_iter().collect();
+        self
+    }
+
+    /// Decides whether a task can run now.
+    #[must_use]
+    pub fn decide_task(&self, task: &Task) -> SchedulerDecision {
+        if let Some(dependency_id) = task
+            .dependencies
+            .iter()
+            .find(|dependency_id| !self.completed_task_ids.contains(dependency_id))
+        {
+            return SchedulerDecision::Wait {
+                task_id: task.id.clone(),
+                reason: SchedulerWaitReason::DependencyIncomplete {
+                    dependency_id: dependency_id.clone(),
+                },
+            };
+        }
+
+        let requested_leases = task.effective_lease_requests();
+        if let Some((request, existing)) = requested_leases.iter().find_map(|request| {
+            self.active_leases
+                .iter()
+                .find(|existing| {
+                    existing.resource_id == request.resource_id
+                        && !existing.mode.is_compatible_with(request.mode)
+                })
+                .map(|existing| (request, existing))
+        }) {
+            return SchedulerDecision::Wait {
+                task_id: task.id.clone(),
+                reason: SchedulerWaitReason::ResourceConflict {
+                    resource_id: request.resource_id.clone(),
+                    existing_lease_id: existing.id.clone(),
+                    existing_mode: existing.mode,
+                    requested_mode: request.mode,
+                },
+            };
+        }
+
+        if let Some((path, lease)) = self.find_lower_layer_disruption(task) {
+            return SchedulerDecision::Wait {
+                task_id: task.id.clone(),
+                reason: SchedulerWaitReason::LowerLayerDisruption {
+                    lower_resource_id: path.lower_resource_id.clone(),
+                    upper_resource_id: path.upper_resource_id.clone(),
+                    existing_lease_id: lease.id.clone(),
+                    existing_mode: lease.mode,
+                },
+            };
+        }
+
+        SchedulerDecision::Run {
+            task_id: task.id.clone(),
+            reason: SchedulerRunReason::DependenciesSatisfiedNoConflicts,
+        }
+    }
+
+    fn find_lower_layer_disruption<'a>(
+        &'a self,
+        task: &Task,
+    ) -> Option<(&'a ResourceDependencyPath, &'a ResourceLease)> {
+        let requested_resources = task.mutated_resource_ids();
+        self.active_leases
+            .iter()
+            .filter(|lease| matches!(lease.mode, LeaseMode::Drain | LeaseMode::Reboot))
+            .find_map(|lease| {
+                self.dependency_paths
+                    .iter()
+                    .find(|path| {
+                        path.lower_resource_id == lease.resource_id
+                            && requested_resources.contains(&path.upper_resource_id)
+                            && task.layer != OperationalLayer::System
+                    })
+                    .map(|path| (path, lease))
+            })
+    }
+}
+
+impl Task {
+    /// Returns explicit lease requests or default requests derived from reads and writes.
+    #[must_use]
+    pub fn effective_lease_requests(&self) -> Vec<ResourceLeaseRequest> {
+        if !self.lease_requests.is_empty() {
+            return self.lease_requests.clone();
+        }
+
+        let mut requests: Vec<ResourceLeaseRequest> = self
+            .reads
+            .iter()
+            .map(|resource_id| {
+                ResourceLeaseRequest::new(resource_id.clone(), LeaseMode::Observe, "task read")
+            })
+            .collect();
+        requests.extend(self.writes.iter().map(|resource_id| {
+            ResourceLeaseRequest::new(resource_id.clone(), LeaseMode::Exclusive, "task write")
+        }));
+        requests
+    }
+
+    fn mutated_resource_ids(&self) -> Vec<String> {
+        let mut resource_ids = self.writes.clone();
+        resource_ids.extend(
+            self.lease_requests
+                .iter()
+                .filter(|request| request.mode.is_mutating())
+                .map(|request| request.resource_id.clone()),
+        );
+        resource_ids
     }
 }
 
@@ -937,7 +1178,8 @@ mod tests {
     use super::{
         ActionKind, ActionTarget, CapabilityLeaseClaims, HelperActionRequest, HelperAllowlist,
         HelperAllowlistEntry, HelperArgument, HelperRejection, HelperValidationContext,
-        LeaseSignatureStatus, SignedCapabilityLease,
+        LeaseSignatureStatus, ResourceDependencyPath, SchedulerDecision, SchedulerSnapshot,
+        SchedulerWaitReason, SignedCapabilityLease,
     };
     use super::{
         Capability, CapabilityFailure, CapabilityReport, ImpactSet, LeaseMode, OperatingSystem,
@@ -1089,6 +1331,102 @@ mod tests {
         assert!(LeaseMode::Intent.is_compatible_with(LeaseMode::Exclusive));
         assert!(!LeaseMode::Exclusive.is_compatible_with(LeaseMode::Exclusive));
         assert!(!LeaseMode::Observe.is_compatible_with(LeaseMode::Reboot));
+    }
+
+    #[test]
+    fn scheduler_allows_independent_application_tasks_to_run_concurrently() {
+        let snapshot = SchedulerSnapshot::empty().with_active_leases([ResourceLease::for_run(
+            "lease-cart",
+            "run-cart",
+            "application:cart/service",
+            LeaseMode::Exclusive,
+            "cart restart",
+        )]);
+        let task = Task::new("restart-search", OperationalLayer::Application)
+            .with_writes(["application:search/service".to_owned()]);
+
+        assert_eq!(
+            snapshot.decide_task(&task),
+            SchedulerDecision::Run {
+                task_id: "restart-search".to_owned(),
+                reason: super::SchedulerRunReason::DependenciesSatisfiedNoConflicts,
+            }
+        );
+    }
+
+    #[test]
+    fn scheduler_serializes_same_resource_mutations() {
+        let snapshot = SchedulerSnapshot::empty().with_active_leases([ResourceLease::for_run(
+            "lease-1",
+            "run-1",
+            "application:cart/service",
+            LeaseMode::Exclusive,
+            "cart restart",
+        )]);
+        let task = Task::new("restart-cart-again", OperationalLayer::Application)
+            .with_writes(["application:cart/service".to_owned()]);
+
+        assert_eq!(
+            snapshot.decide_task(&task),
+            SchedulerDecision::Wait {
+                task_id: "restart-cart-again".to_owned(),
+                reason: SchedulerWaitReason::ResourceConflict {
+                    resource_id: "application:cart/service".to_owned(),
+                    existing_lease_id: "lease-1".to_owned(),
+                    existing_mode: LeaseMode::Exclusive,
+                    requested_mode: LeaseMode::Exclusive,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn scheduler_blocks_upper_layer_mutation_during_system_drain() {
+        let snapshot = SchedulerSnapshot::empty()
+            .with_active_leases([ResourceLease::for_run(
+                "lease-drain",
+                "run-system",
+                "system:node/prod-web-01/reboot",
+                LeaseMode::Drain,
+                "prepare reboot",
+            )])
+            .with_dependency_paths([ResourceDependencyPath::new(
+                "system:node/prod-web-01/reboot",
+                "application:on-node/prod-web-01",
+            )]);
+        let task = Task::new("restart-app", OperationalLayer::Application)
+            .with_writes(["application:on-node/prod-web-01".to_owned()]);
+
+        assert_eq!(
+            snapshot.decide_task(&task),
+            SchedulerDecision::Wait {
+                task_id: "restart-app".to_owned(),
+                reason: SchedulerWaitReason::LowerLayerDisruption {
+                    lower_resource_id: "system:node/prod-web-01/reboot".to_owned(),
+                    upper_resource_id: "application:on-node/prod-web-01".to_owned(),
+                    existing_lease_id: "lease-drain".to_owned(),
+                    existing_mode: LeaseMode::Drain,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn scheduler_waits_for_incomplete_task_dependency() {
+        let snapshot =
+            SchedulerSnapshot::empty().with_completed_tasks(["collect-status".to_owned()]);
+        let task = Task::new("restart-service", OperationalLayer::System)
+            .with_dependencies(["collect-status".to_owned(), "approval".to_owned()]);
+
+        assert_eq!(
+            snapshot.decide_task(&task),
+            SchedulerDecision::Wait {
+                task_id: "restart-service".to_owned(),
+                reason: SchedulerWaitReason::DependencyIncomplete {
+                    dependency_id: "approval".to_owned(),
+                },
+            }
+        );
     }
 
     #[test]
