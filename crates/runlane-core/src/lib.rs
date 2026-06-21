@@ -347,6 +347,72 @@ impl Capability {
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
+
+    /// Returns the capability identifier as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Capability reported as unsupported by a backend, with a fail-closed reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsupportedCapability {
+    pub capability: Capability,
+    pub reason: String,
+}
+
+impl UnsupportedCapability {
+    /// Creates an unsupported capability entry.
+    #[must_use]
+    pub fn new(capability: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            capability: Capability::new(capability),
+            reason: reason.into(),
+        }
+    }
+}
+
+/// Native capability report submitted by an agent backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityReport {
+    pub node_id: String,
+    pub os: OperatingSystem,
+    pub capabilities: Vec<Capability>,
+    pub unsupported: Vec<UnsupportedCapability>,
+}
+
+impl CapabilityReport {
+    /// Creates a capability report.
+    #[must_use]
+    pub fn new(
+        node_id: impl Into<String>,
+        os: OperatingSystem,
+        capabilities: impl IntoIterator<Item = Capability>,
+        unsupported: impl IntoIterator<Item = UnsupportedCapability>,
+    ) -> Self {
+        Self {
+            node_id: node_id.into(),
+            os,
+            capabilities: capabilities.into_iter().collect(),
+            unsupported: unsupported.into_iter().collect(),
+        }
+    }
+
+    /// Returns true if the backend reported a supported capability.
+    #[must_use]
+    pub fn supports(&self, capability: &Capability) -> bool {
+        self.capabilities
+            .iter()
+            .any(|existing| existing == capability)
+    }
+}
+
+/// Fail-closed capability error shape shared by platform backends and runbook planning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityFailure {
+    Unsupported(UnsupportedCapability),
+    BackendUnavailable { os: OperatingSystem, reason: String },
 }
 
 /// Typed action names keep model output away from raw shell execution.
@@ -546,9 +612,10 @@ pub fn is_valid_run_transition(from: RunState, to: RunState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        Capability, ImpactSet, LeaseMode, OperationalLayer, Resource, ResourceKind, ResourceLease,
-        ResourceScope, Run, RunState, SkippedVerification, Task, VerificationCheck,
-        VerificationPlan, VerificationTier, is_valid_run_transition,
+        Capability, CapabilityFailure, CapabilityReport, ImpactSet, LeaseMode, OperatingSystem,
+        OperationalLayer, Resource, ResourceKind, ResourceLease, ResourceScope, Run, RunState,
+        SkippedVerification, Task, UnsupportedCapability, VerificationCheck, VerificationPlan,
+        VerificationTier, is_valid_run_transition,
     };
 
     #[test]
@@ -694,5 +761,27 @@ mod tests {
         assert!(LeaseMode::Intent.is_compatible_with(LeaseMode::Exclusive));
         assert!(!LeaseMode::Exclusive.is_compatible_with(LeaseMode::Exclusive));
         assert!(!LeaseMode::Observe.is_compatible_with(LeaseMode::Reboot));
+    }
+
+    #[test]
+    fn capability_report_supports_fail_closed_unsupported_shape() {
+        let report = CapabilityReport::new(
+            "openbsd-edge-01",
+            OperatingSystem::OpenBsd,
+            [
+                Capability::new("os.openbsd"),
+                Capability::new("service.openbsd-rcctl"),
+            ],
+            [UnsupportedCapability::new(
+                "service.systemd",
+                "OpenBSD uses rcctl, not systemd",
+            )],
+        );
+
+        assert!(report.supports(&Capability::new("service.openbsd-rcctl")));
+        assert!(!report.supports(&Capability::new("service.systemd")));
+
+        let failure = CapabilityFailure::Unsupported(report.unsupported[0].clone());
+        assert!(matches!(failure, CapabilityFailure::Unsupported(_)));
     }
 }
