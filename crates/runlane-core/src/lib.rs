@@ -2,6 +2,7 @@
 //!
 //! This crate intentionally contains no network, database, or OS-specific code.
 
+pub mod analyzer;
 pub mod fleet;
 pub mod runtime;
 

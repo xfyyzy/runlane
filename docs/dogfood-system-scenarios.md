@@ -44,6 +44,11 @@ Command construction is owned by the platform backend. Runbooks and analyzer
 output select typed capabilities and resources; they do not supply shell
 commands.
 
+The deterministic analyzer consumes evidence envelopes and emits typed proposal
+data: hypothesis, evidence references, proposed actions, confidence, and
+approval requirements. Prompt-injection-like log text remains untrusted
+evidence and cannot introduce helper actions or shell commands.
+
 Resources:
 
 - `system:node/<node>/service/<service>`;
