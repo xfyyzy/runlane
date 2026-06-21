@@ -154,11 +154,12 @@ Read in this order before implementing:
 5. [`docs/architecture.md`](docs/architecture.md)
 6. [`docs/execution-semantics.md`](docs/execution-semantics.md)
 7. [`docs/platform-model.md`](docs/platform-model.md)
-8. [`docs/coding-agent-brief.md`](docs/coding-agent-brief.md)
-9. [`docs/dogfood-system-scenarios.md`](docs/dogfood-system-scenarios.md)
-10. [`docs/user-journey-v0.1.md`](docs/user-journey-v0.1.md)
-11. [`docs/milestones/v0.1.md`](docs/milestones/v0.1.md)
-12. [`docs/adr/0001-cross-platform-native-agent.md`](docs/adr/0001-cross-platform-native-agent.md)
+8. [`docs/helper-contract.md`](docs/helper-contract.md)
+9. [`docs/coding-agent-brief.md`](docs/coding-agent-brief.md)
+10. [`docs/dogfood-system-scenarios.md`](docs/dogfood-system-scenarios.md)
+11. [`docs/user-journey-v0.1.md`](docs/user-journey-v0.1.md)
+12. [`docs/milestones/v0.1.md`](docs/milestones/v0.1.md)
+13. [`docs/adr/0001-cross-platform-native-agent.md`](docs/adr/0001-cross-platform-native-agent.md)
 
 ## Development
 

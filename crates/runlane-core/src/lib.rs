@@ -424,6 +424,329 @@ pub enum ActionKind {
     RemoveAllowlistedFile,
 }
 
+/// Target bound to a typed helper action.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ActionTarget {
+    pub resource_id: String,
+    pub subject: String,
+}
+
+impl ActionTarget {
+    /// Creates an action target bound to a resource id and local subject.
+    #[must_use]
+    pub fn new(resource_id: impl Into<String>, subject: impl Into<String>) -> Self {
+        Self {
+            resource_id: resource_id.into(),
+            subject: subject.into(),
+        }
+    }
+}
+
+/// Claims signed by the server before a helper can perform a privileged action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityLeaseClaims {
+    pub lease_id: String,
+    pub run_id: String,
+    pub approval_id: String,
+    pub node_id: String,
+    pub action: ActionKind,
+    pub target: ActionTarget,
+    pub allowlist_entry_id: String,
+    pub expires_at_unix_seconds: u64,
+    pub nonce: String,
+}
+
+impl CapabilityLeaseClaims {
+    /// Creates lease claims for a typed action target.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        lease_id: impl Into<String>,
+        run_id: impl Into<String>,
+        approval_id: impl Into<String>,
+        node_id: impl Into<String>,
+        action: ActionKind,
+        target: ActionTarget,
+        allowlist_entry_id: impl Into<String>,
+        expires_at_unix_seconds: u64,
+        nonce: impl Into<String>,
+    ) -> Self {
+        Self {
+            lease_id: lease_id.into(),
+            run_id: run_id.into(),
+            approval_id: approval_id.into(),
+            node_id: node_id.into(),
+            action,
+            target,
+            allowlist_entry_id: allowlist_entry_id.into(),
+            expires_at_unix_seconds,
+            nonce: nonce.into(),
+        }
+    }
+}
+
+/// Signed lease envelope. The signature bytes are opaque to the domain model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedCapabilityLease {
+    pub claims: CapabilityLeaseClaims,
+    pub key_id: String,
+    pub signature: String,
+}
+
+impl SignedCapabilityLease {
+    /// Creates a signed lease envelope.
+    #[must_use]
+    pub fn new(
+        claims: CapabilityLeaseClaims,
+        key_id: impl Into<String>,
+        signature: impl Into<String>,
+    ) -> Self {
+        Self {
+            claims,
+            key_id: key_id.into(),
+            signature: signature.into(),
+        }
+    }
+}
+
+/// Signature verification status provided by the helper cryptographic layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaseSignatureStatus {
+    Valid,
+    Invalid,
+}
+
+/// A local helper allowlist entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelperAllowlistEntry {
+    pub id: String,
+    pub action: ActionKind,
+    pub target_resource_id: String,
+}
+
+impl HelperAllowlistEntry {
+    /// Creates a local helper allowlist entry.
+    #[must_use]
+    pub fn new(
+        id: impl Into<String>,
+        action: ActionKind,
+        target_resource_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            action,
+            target_resource_id: target_resource_id.into(),
+        }
+    }
+
+    /// Returns true when the entry permits the action target.
+    #[must_use]
+    pub fn permits(&self, action: &ActionKind, target: &ActionTarget) -> bool {
+        self.action == *action && self.target_resource_id == target.resource_id
+    }
+}
+
+/// Local helper allowlist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelperAllowlist {
+    pub entries: Vec<HelperAllowlistEntry>,
+}
+
+impl HelperAllowlist {
+    /// Creates a helper allowlist.
+    #[must_use]
+    pub fn new(entries: impl IntoIterator<Item = HelperAllowlistEntry>) -> Self {
+        Self {
+            entries: entries.into_iter().collect(),
+        }
+    }
+
+    /// Returns true when the allowlist entry id permits the action target.
+    #[must_use]
+    pub fn permits(&self, entry_id: &str, action: &ActionKind, target: &ActionTarget) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.id == entry_id && entry.permits(action, target))
+    }
+}
+
+/// Key-value action argument for typed helper requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelperArgument {
+    pub name: String,
+    pub value: String,
+}
+
+impl HelperArgument {
+    /// Creates a helper argument.
+    #[must_use]
+    pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+        }
+    }
+}
+
+/// Typed helper action request. It contains no shell command string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelperActionRequest {
+    pub lease_id: String,
+    pub action: ActionKind,
+    pub target: ActionTarget,
+    pub arguments: Vec<HelperArgument>,
+}
+
+impl HelperActionRequest {
+    /// Creates a helper action request.
+    #[must_use]
+    pub fn new(
+        lease_id: impl Into<String>,
+        action: ActionKind,
+        target: ActionTarget,
+        arguments: impl IntoIterator<Item = HelperArgument>,
+    ) -> Self {
+        Self {
+            lease_id: lease_id.into(),
+            action,
+            target,
+            arguments: arguments.into_iter().collect(),
+        }
+    }
+}
+
+/// Helper action result status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelperActionStatus {
+    Succeeded,
+    Failed,
+    Denied,
+}
+
+/// Structured helper response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelperActionResponse {
+    pub status: HelperActionStatus,
+    pub message: String,
+}
+
+impl HelperActionResponse {
+    /// Creates a helper response.
+    #[must_use]
+    pub fn new(status: HelperActionStatus, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+        }
+    }
+}
+
+/// Helper-side validation context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelperValidationContext {
+    pub node_id: String,
+    pub now_unix_seconds: u64,
+    pub signature_status: LeaseSignatureStatus,
+    pub seen_nonces: Vec<String>,
+    pub allowlist: HelperAllowlist,
+}
+
+impl HelperValidationContext {
+    /// Creates a helper validation context.
+    #[must_use]
+    pub fn new(
+        node_id: impl Into<String>,
+        now_unix_seconds: u64,
+        signature_status: LeaseSignatureStatus,
+        seen_nonces: impl IntoIterator<Item = String>,
+        allowlist: HelperAllowlist,
+    ) -> Self {
+        Self {
+            node_id: node_id.into(),
+            now_unix_seconds,
+            signature_status,
+            seen_nonces: seen_nonces.into_iter().collect(),
+            allowlist,
+        }
+    }
+}
+
+/// Fail-closed helper request rejection reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HelperRejection {
+    InvalidSignature,
+    ExpiredLease,
+    ReplayedNonce,
+    NodeMismatch,
+    LeaseMismatch,
+    ActionMismatch,
+    TargetMismatch,
+    LocalAllowlistDenied,
+}
+
+/// Accepted helper invocation after lease, request, replay, and allowlist checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedHelperInvocation {
+    pub lease_id: String,
+    pub run_id: String,
+    pub approval_id: String,
+    pub action: ActionKind,
+    pub target: ActionTarget,
+}
+
+/// Validates a helper request against its signed lease and local policy.
+///
+/// Cryptographic verification happens before this function and is represented
+/// by [`LeaseSignatureStatus`]. The remaining checks are deterministic claim,
+/// replay, target, and allowlist validation.
+pub fn validate_helper_request(
+    request: &HelperActionRequest,
+    lease: &SignedCapabilityLease,
+    context: &HelperValidationContext,
+) -> Result<AcceptedHelperInvocation, HelperRejection> {
+    let claims = &lease.claims;
+
+    if context.signature_status != LeaseSignatureStatus::Valid {
+        return Err(HelperRejection::InvalidSignature);
+    }
+    if claims.expires_at_unix_seconds <= context.now_unix_seconds {
+        return Err(HelperRejection::ExpiredLease);
+    }
+    if context
+        .seen_nonces
+        .iter()
+        .any(|nonce| nonce == &claims.nonce)
+    {
+        return Err(HelperRejection::ReplayedNonce);
+    }
+    if claims.node_id != context.node_id {
+        return Err(HelperRejection::NodeMismatch);
+    }
+    if claims.lease_id != request.lease_id {
+        return Err(HelperRejection::LeaseMismatch);
+    }
+    if claims.action != request.action {
+        return Err(HelperRejection::ActionMismatch);
+    }
+    if claims.target != request.target {
+        return Err(HelperRejection::TargetMismatch);
+    }
+    if !context
+        .allowlist
+        .permits(&claims.allowlist_entry_id, &request.action, &request.target)
+    {
+        return Err(HelperRejection::LocalAllowlistDenied);
+    }
+
+    Ok(AcceptedHelperInvocation {
+        lease_id: claims.lease_id.clone(),
+        run_id: claims.run_id.clone(),
+        approval_id: claims.approval_id.clone(),
+        action: claims.action.clone(),
+        target: claims.target.clone(),
+    })
+}
+
 /// A schedulable unit inside a run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task {
@@ -612,10 +935,15 @@ pub fn is_valid_run_transition(from: RunState, to: RunState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
+        ActionKind, ActionTarget, CapabilityLeaseClaims, HelperActionRequest, HelperAllowlist,
+        HelperAllowlistEntry, HelperArgument, HelperRejection, HelperValidationContext,
+        LeaseSignatureStatus, SignedCapabilityLease,
+    };
+    use super::{
         Capability, CapabilityFailure, CapabilityReport, ImpactSet, LeaseMode, OperatingSystem,
         OperationalLayer, Resource, ResourceKind, ResourceLease, ResourceScope, Run, RunState,
         SkippedVerification, Task, UnsupportedCapability, VerificationCheck, VerificationPlan,
-        VerificationTier, is_valid_run_transition,
+        VerificationTier, is_valid_run_transition, validate_helper_request,
     };
 
     #[test]
@@ -783,5 +1111,146 @@ mod tests {
 
         let failure = CapabilityFailure::Unsupported(report.unsupported[0].clone());
         assert!(matches!(failure, CapabilityFailure::Unsupported(_)));
+    }
+
+    #[test]
+    fn helper_validation_accepts_exact_signed_scoped_lease() {
+        let target = ActionTarget::new("system:node/prod-web-01/service/sshd", "sshd");
+        let lease = signed_service_restart_lease(target.clone(), 200);
+        let request = HelperActionRequest::new(
+            "lease-1",
+            ActionKind::ServiceRestart,
+            target,
+            [HelperArgument::new("service", "sshd")],
+        );
+        let context = helper_context(100, LeaseSignatureStatus::Valid, []);
+
+        let accepted = validate_helper_request(&request, &lease, &context)
+            .expect("exact matching lease should validate");
+
+        assert_eq!(accepted.lease_id, "lease-1");
+        assert_eq!(accepted.run_id, "run-1");
+        assert_eq!(accepted.approval_id, "approval-1");
+        assert_eq!(accepted.action, ActionKind::ServiceRestart);
+    }
+
+    #[test]
+    fn helper_validation_fails_closed_for_invalid_expired_or_replayed_leases() {
+        let target = ActionTarget::new("system:node/prod-web-01/service/sshd", "sshd");
+        let lease = signed_service_restart_lease(target.clone(), 200);
+        let request = HelperActionRequest::new("lease-1", ActionKind::ServiceRestart, target, []);
+
+        assert_eq!(
+            validate_helper_request(
+                &request,
+                &lease,
+                &helper_context(100, LeaseSignatureStatus::Invalid, [])
+            ),
+            Err(HelperRejection::InvalidSignature)
+        );
+        assert_eq!(
+            validate_helper_request(
+                &request,
+                &lease,
+                &helper_context(250, LeaseSignatureStatus::Valid, [])
+            ),
+            Err(HelperRejection::ExpiredLease)
+        );
+        assert_eq!(
+            validate_helper_request(
+                &request,
+                &lease,
+                &helper_context(100, LeaseSignatureStatus::Valid, ["nonce-1".to_owned()])
+            ),
+            Err(HelperRejection::ReplayedNonce)
+        );
+    }
+
+    #[test]
+    fn helper_validation_fails_closed_for_mismatched_action_target_and_allowlist() {
+        let target = ActionTarget::new("system:node/prod-web-01/service/sshd", "sshd");
+        let lease = signed_service_restart_lease(target.clone(), 200);
+
+        let wrong_action =
+            HelperActionRequest::new("lease-1", ActionKind::ServiceReload, target.clone(), []);
+        assert_eq!(
+            validate_helper_request(
+                &wrong_action,
+                &lease,
+                &helper_context(100, LeaseSignatureStatus::Valid, [])
+            ),
+            Err(HelperRejection::ActionMismatch)
+        );
+
+        let wrong_target = HelperActionRequest::new(
+            "lease-1",
+            ActionKind::ServiceRestart,
+            ActionTarget::new("system:node/prod-web-01/service/nginx", "nginx"),
+            [],
+        );
+        assert_eq!(
+            validate_helper_request(
+                &wrong_target,
+                &lease,
+                &helper_context(100, LeaseSignatureStatus::Valid, [])
+            ),
+            Err(HelperRejection::TargetMismatch)
+        );
+
+        let denied_context = HelperValidationContext::new(
+            "prod-web-01",
+            100,
+            LeaseSignatureStatus::Valid,
+            [],
+            HelperAllowlist::new([HelperAllowlistEntry::new(
+                "allow-nginx-restart",
+                ActionKind::ServiceRestart,
+                "system:node/prod-web-01/service/nginx",
+            )]),
+        );
+        let request = HelperActionRequest::new("lease-1", ActionKind::ServiceRestart, target, []);
+        assert_eq!(
+            validate_helper_request(&request, &lease, &denied_context),
+            Err(HelperRejection::LocalAllowlistDenied)
+        );
+    }
+
+    fn signed_service_restart_lease(
+        target: ActionTarget,
+        expires_at_unix_seconds: u64,
+    ) -> SignedCapabilityLease {
+        SignedCapabilityLease::new(
+            CapabilityLeaseClaims::new(
+                "lease-1",
+                "run-1",
+                "approval-1",
+                "prod-web-01",
+                ActionKind::ServiceRestart,
+                target,
+                "allow-sshd-restart",
+                expires_at_unix_seconds,
+                "nonce-1",
+            ),
+            "test-key",
+            "test-signature",
+        )
+    }
+
+    fn helper_context<const N: usize>(
+        now_unix_seconds: u64,
+        signature_status: LeaseSignatureStatus,
+        seen_nonces: [String; N],
+    ) -> HelperValidationContext {
+        HelperValidationContext::new(
+            "prod-web-01",
+            now_unix_seconds,
+            signature_status,
+            seen_nonces,
+            HelperAllowlist::new([HelperAllowlistEntry::new(
+                "allow-sshd-restart",
+                ActionKind::ServiceRestart,
+                "system:node/prod-web-01/service/sshd",
+            )]),
+        )
     }
 }
