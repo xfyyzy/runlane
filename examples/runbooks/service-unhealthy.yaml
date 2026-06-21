@@ -49,7 +49,10 @@ collect:
     capability: storage.df
 
   - id: process_snapshot
-    capability: process.snapshot
+    capability_any:
+      - process.procfs
+      - process.procstat
+      - process.ps
 
 analyze:
   mode: structured_proposal

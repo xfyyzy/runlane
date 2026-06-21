@@ -768,6 +768,271 @@ impl CapabilityReport {
     }
 }
 
+/// Native service manager selected for the service-unhealthy dogfood runbook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceManagerDriver {
+    Systemd,
+    FreeBsdRc,
+    OpenBsdRcctl,
+}
+
+impl ServiceManagerDriver {
+    /// Capability required to operate the selected service manager.
+    #[must_use]
+    pub const fn capability_id(self) -> &'static str {
+        match self {
+            Self::Systemd => "service.systemd",
+            Self::FreeBsdRc => "service.freebsd-rc",
+            Self::OpenBsdRcctl => "service.openbsd-rcctl",
+        }
+    }
+}
+
+/// Planning request for the v0.1 service-unhealthy dogfood runbook.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceUnhealthyRunbookRequest {
+    pub run_id: String,
+    pub node_id: String,
+    pub service: String,
+}
+
+impl ServiceUnhealthyRunbookRequest {
+    /// Creates a service-unhealthy planning request.
+    #[must_use]
+    pub fn new(
+        run_id: impl Into<String>,
+        node_id: impl Into<String>,
+        service: impl Into<String>,
+    ) -> Self {
+        Self {
+            run_id: run_id.into(),
+            node_id: node_id.into(),
+            service: service.into(),
+        }
+    }
+}
+
+/// Fully planned service-unhealthy runbook execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceUnhealthyRunbookPlan {
+    pub driver: ServiceManagerDriver,
+    pub log_capability: Capability,
+    pub process_capability: Capability,
+    pub privilege_capability: Capability,
+    pub run: Run,
+}
+
+/// Fail-closed service-unhealthy planning error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServiceUnhealthyPlanError {
+    NodeMismatch {
+        requested_node_id: String,
+        report_node_id: String,
+    },
+    UnsupportedOperatingSystem {
+        os: OperatingSystem,
+    },
+    MissingRequiredCapability {
+        capability: Capability,
+        reason: String,
+    },
+}
+
+/// Plans the cross-platform service-unhealthy dogfood runbook without executing it.
+///
+/// The planner selects only the native service manager declared by the
+/// capability report's OS. Missing capabilities fail closed instead of falling
+/// back to a weaker command path.
+pub fn plan_service_unhealthy_runbook(
+    request: &ServiceUnhealthyRunbookRequest,
+    report: &CapabilityReport,
+) -> Result<ServiceUnhealthyRunbookPlan, ServiceUnhealthyPlanError> {
+    if request.node_id != report.node_id {
+        return Err(ServiceUnhealthyPlanError::NodeMismatch {
+            requested_node_id: request.node_id.clone(),
+            report_node_id: report.node_id.clone(),
+        });
+    }
+
+    let driver = service_manager_driver_for_os(report.os)?;
+    let service_capability = require_reported_capability(
+        report,
+        driver.capability_id(),
+        "native service manager capability is required for service-unhealthy",
+    )?;
+    let log_capability = require_reported_capability(
+        report,
+        log_capability_for_os(report.os)?,
+        "native service log capability is required for service-unhealthy",
+    )?;
+    let process_capability = require_reported_capability(
+        report,
+        process_capability_for_os(report.os)?,
+        "native process snapshot capability is required for service-unhealthy",
+    )?;
+    let storage_capability = require_reported_capability(
+        report,
+        "storage.df",
+        "filesystem snapshot capability is required for service-unhealthy",
+    )?;
+    let privilege_capability = require_reported_capability(
+        report,
+        privilege_capability_for_os(report.os)?,
+        "signed helper capability is required for service-unhealthy restart",
+    )?;
+
+    let service_resource = service_resource_id(&request.node_id, &request.service);
+    let log_resource = format!("system:node/{}/logs/{}", request.node_id, request.service);
+    let filesystem_resource = format!("system:node/{}/filesystem", request.node_id);
+    let process_resource = format!("system:node/{}/processes", request.node_id);
+    let package_db_resource = format!("system:node/{}/package-db", request.node_id);
+    let firewall_resource = format!("system:node/{}/firewall", request.node_id);
+
+    let impact = ImpactSet::writes(OperationalLayer::System, [service_resource.clone()])
+        .with_may_affect([
+            format!("platform:on-node/{}", request.node_id),
+            format!("application:on-node/{}", request.node_id),
+        ])
+        .with_does_not_affect([package_db_resource, firewall_resource]);
+
+    let mut verification = VerificationPlanner::new(VerificationPolicy::minimal())
+        .plan(&ActionKind::ServiceRestart, &impact);
+    verification.skipped.extend([
+        SkippedVerification::new(
+            "package_audit",
+            "service-unhealthy restart mutates only the service resource, not package-db",
+        ),
+        SkippedVerification::new(
+            "firewall_audit",
+            "service-unhealthy restart mutates only the service resource, not firewall rules",
+        ),
+    ]);
+
+    let collect_status = Task::new("collect-service-status", OperationalLayer::System)
+        .with_capabilities([service_capability.clone()])
+        .with_reads([service_resource.clone()]);
+    let collect_logs = Task::new("collect-recent-logs", OperationalLayer::System)
+        .with_capabilities([log_capability.clone()])
+        .with_reads([log_resource]);
+    let collect_disk = Task::new("collect-disk-snapshot", OperationalLayer::System)
+        .with_capabilities([storage_capability])
+        .with_reads([filesystem_resource]);
+    let collect_process = Task::new("collect-process-snapshot", OperationalLayer::System)
+        .with_capabilities([process_capability.clone()])
+        .with_reads([process_resource]);
+    let restart_service = Task::new("restart-service", OperationalLayer::System)
+        .with_capabilities([service_capability, privilege_capability.clone()])
+        .with_reads([service_resource.clone()])
+        .with_writes([service_resource.clone()])
+        .with_lease_requests([ResourceLeaseRequest::new(
+            service_resource,
+            LeaseMode::Exclusive,
+            "service-unhealthy restart requires serialized service mutation",
+        )])
+        .with_dependencies([
+            "collect-service-status".to_owned(),
+            "collect-recent-logs".to_owned(),
+            "collect-disk-snapshot".to_owned(),
+            "collect-process-snapshot".to_owned(),
+        ])
+        .with_impact(impact.clone())
+        .with_verification(verification.clone());
+
+    let run = Run::new(
+        request.run_id.clone(),
+        format!(
+            "Diagnose unhealthy service {} on {}",
+            request.service, request.node_id
+        ),
+        OperationalLayer::System,
+    )
+    .with_tasks([
+        collect_status,
+        collect_logs,
+        collect_disk,
+        collect_process,
+        restart_service,
+    ])
+    .with_impact(impact)
+    .with_verification(verification);
+
+    Ok(ServiceUnhealthyRunbookPlan {
+        driver,
+        log_capability,
+        process_capability,
+        privilege_capability,
+        run,
+    })
+}
+
+fn service_manager_driver_for_os(
+    os: OperatingSystem,
+) -> Result<ServiceManagerDriver, ServiceUnhealthyPlanError> {
+    match os {
+        OperatingSystem::Linux => Ok(ServiceManagerDriver::Systemd),
+        OperatingSystem::FreeBsd => Ok(ServiceManagerDriver::FreeBsdRc),
+        OperatingSystem::OpenBsd => Ok(ServiceManagerDriver::OpenBsdRcctl),
+        OperatingSystem::Solaris | OperatingSystem::Illumos | OperatingSystem::Unknown => {
+            Err(ServiceUnhealthyPlanError::UnsupportedOperatingSystem { os })
+        }
+    }
+}
+
+fn log_capability_for_os(os: OperatingSystem) -> Result<&'static str, ServiceUnhealthyPlanError> {
+    match os {
+        OperatingSystem::Linux => Ok("logs.journald"),
+        OperatingSystem::FreeBsd | OperatingSystem::OpenBsd => Ok("logs.syslog-file"),
+        OperatingSystem::Solaris | OperatingSystem::Illumos | OperatingSystem::Unknown => {
+            Err(ServiceUnhealthyPlanError::UnsupportedOperatingSystem { os })
+        }
+    }
+}
+
+fn process_capability_for_os(
+    os: OperatingSystem,
+) -> Result<&'static str, ServiceUnhealthyPlanError> {
+    match os {
+        OperatingSystem::Linux => Ok("process.procfs"),
+        OperatingSystem::FreeBsd => Ok("process.procstat"),
+        OperatingSystem::OpenBsd => Ok("process.ps"),
+        OperatingSystem::Solaris | OperatingSystem::Illumos | OperatingSystem::Unknown => {
+            Err(ServiceUnhealthyPlanError::UnsupportedOperatingSystem { os })
+        }
+    }
+}
+
+fn privilege_capability_for_os(
+    os: OperatingSystem,
+) -> Result<&'static str, ServiceUnhealthyPlanError> {
+    match os {
+        OperatingSystem::Linux | OperatingSystem::FreeBsd => Ok("privilege.sudo-helper"),
+        OperatingSystem::OpenBsd => Ok("privilege.doas-helper"),
+        OperatingSystem::Solaris | OperatingSystem::Illumos | OperatingSystem::Unknown => {
+            Err(ServiceUnhealthyPlanError::UnsupportedOperatingSystem { os })
+        }
+    }
+}
+
+fn require_reported_capability(
+    report: &CapabilityReport,
+    capability_id: &str,
+    reason: impl Into<String>,
+) -> Result<Capability, ServiceUnhealthyPlanError> {
+    let capability = Capability::new(capability_id);
+    if report.supports(&capability) {
+        Ok(capability)
+    } else {
+        Err(ServiceUnhealthyPlanError::MissingRequiredCapability {
+            capability,
+            reason: reason.into(),
+        })
+    }
+}
+
+fn service_resource_id(node_id: &str, service: &str) -> String {
+    format!("system:node/{node_id}/service/{service}")
+}
+
 /// Fail-closed capability error shape shared by platform backends and runbook planning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityFailure {
@@ -1839,6 +2104,20 @@ impl Run {
         self.leases = leases.into_iter().collect();
         self
     }
+
+    /// Sets the run-level impact.
+    #[must_use]
+    pub fn with_impact(mut self, impact: ImpactSet) -> Self {
+        self.impact = impact;
+        self
+    }
+
+    /// Sets the run-level verification plan.
+    #[must_use]
+    pub fn with_verification(mut self, verification: VerificationPlan) -> Self {
+        self.verification = verification;
+        self
+    }
 }
 
 /// Error returned when a run state transition is not allowed.
@@ -1909,10 +2188,11 @@ mod tests {
         FleetIntentSetting, FleetLayerDeclaration, FleetOverlayFragment, FleetOverlayTier,
         ImpactSet, LeaseMode, LocalSpoolItem, OperatingSystem, OperationalLayer,
         ResolvedFleetIntent, Resource, ResourceKind, ResourceLease, ResourceScope, Run, RunState,
+        ServiceManagerDriver, ServiceUnhealthyPlanError, ServiceUnhealthyRunbookRequest,
         SkippedVerification, SpoolReason, Task, UnsupportedCapability, VerificationCheck,
         VerificationPlan, VerificationPlanner, VerificationPolicy, VerificationTier,
-        is_valid_run_transition, resolve_fleet_overlays, validate_agent_task_envelope,
-        validate_helper_request,
+        is_valid_run_transition, plan_service_unhealthy_runbook, resolve_fleet_overlays,
+        validate_agent_task_envelope, validate_helper_request,
     };
 
     #[test]
@@ -2060,6 +2340,258 @@ mod tests {
         assert!(resolved.get("layer.System.selector").is_some());
         assert!(resolved.get("layer.Platform.selector").is_some());
         assert!(resolved.get("layer.Application.selector").is_some());
+    }
+
+    #[test]
+    fn service_unhealthy_plans_across_first_class_platforms() {
+        let cases = [
+            (
+                capability_report(
+                    "linux-01",
+                    OperatingSystem::Linux,
+                    [
+                        "os.linux",
+                        "service.systemd",
+                        "logs.journald",
+                        "process.procfs",
+                        "storage.df",
+                        "privilege.sudo-helper",
+                    ],
+                ),
+                ServiceManagerDriver::Systemd,
+                "logs.journald",
+                "process.procfs",
+                "privilege.sudo-helper",
+            ),
+            (
+                capability_report(
+                    "freebsd-01",
+                    OperatingSystem::FreeBsd,
+                    [
+                        "os.freebsd",
+                        "service.freebsd-rc",
+                        "logs.syslog-file",
+                        "process.procstat",
+                        "storage.df",
+                        "privilege.sudo-helper",
+                    ],
+                ),
+                ServiceManagerDriver::FreeBsdRc,
+                "logs.syslog-file",
+                "process.procstat",
+                "privilege.sudo-helper",
+            ),
+            (
+                capability_report(
+                    "openbsd-01",
+                    OperatingSystem::OpenBsd,
+                    [
+                        "os.openbsd",
+                        "service.openbsd-rcctl",
+                        "logs.syslog-file",
+                        "process.ps",
+                        "storage.df",
+                        "privilege.doas-helper",
+                    ],
+                ),
+                ServiceManagerDriver::OpenBsdRcctl,
+                "logs.syslog-file",
+                "process.ps",
+                "privilege.doas-helper",
+            ),
+        ];
+
+        for (report, driver, log_capability, process_capability, privilege_capability) in cases {
+            let plan = plan_service_unhealthy_runbook(
+                &ServiceUnhealthyRunbookRequest::new(
+                    format!("run-{}", report.node_id),
+                    report.node_id.clone(),
+                    "sshd",
+                ),
+                &report,
+            )
+            .expect("first-class OS should plan service-unhealthy runbook");
+
+            assert_eq!(plan.driver, driver);
+            assert_eq!(plan.log_capability, Capability::new(log_capability));
+            assert_eq!(plan.process_capability, Capability::new(process_capability));
+            assert_eq!(
+                plan.privilege_capability,
+                Capability::new(privilege_capability)
+            );
+            assert_eq!(plan.run.target_layer, OperationalLayer::System);
+            assert_eq!(plan.run.tasks.len(), 5);
+        }
+    }
+
+    #[test]
+    fn service_unhealthy_openbsd_does_not_assume_systemd() {
+        let report = capability_report(
+            "openbsd-01",
+            OperatingSystem::OpenBsd,
+            [
+                "os.openbsd",
+                "service.openbsd-rcctl",
+                "logs.syslog-file",
+                "process.ps",
+                "storage.df",
+                "privilege.doas-helper",
+            ],
+        );
+
+        let plan = plan_service_unhealthy_runbook(
+            &ServiceUnhealthyRunbookRequest::new("run-openbsd", "openbsd-01", "sshd"),
+            &report,
+        )
+        .expect("OpenBSD rcctl capability should plan");
+        let restart = plan
+            .run
+            .tasks
+            .iter()
+            .find(|task| task.id == "restart-service")
+            .expect("restart task should exist");
+
+        assert!(
+            restart
+                .required_capabilities
+                .contains(&Capability::new("service.openbsd-rcctl"))
+        );
+        assert!(
+            !restart
+                .required_capabilities
+                .contains(&Capability::new("service.systemd"))
+        );
+    }
+
+    #[test]
+    fn service_unhealthy_restart_uses_exclusive_lease_and_scoped_verification() {
+        let report = capability_report(
+            "linux-01",
+            OperatingSystem::Linux,
+            [
+                "os.linux",
+                "service.systemd",
+                "logs.journald",
+                "process.procfs",
+                "storage.df",
+                "privilege.sudo-helper",
+            ],
+        );
+
+        let plan = plan_service_unhealthy_runbook(
+            &ServiceUnhealthyRunbookRequest::new("run-linux", "linux-01", "sshd"),
+            &report,
+        )
+        .expect("Linux service-unhealthy runbook should plan");
+        let restart = plan
+            .run
+            .tasks
+            .iter()
+            .find(|task| task.id == "restart-service")
+            .expect("restart task should exist");
+
+        assert_eq!(
+            restart.writes,
+            ["system:node/linux-01/service/sshd".to_owned()]
+        );
+        assert_eq!(restart.lease_requests.len(), 1);
+        assert_eq!(restart.lease_requests[0].mode, LeaseMode::Exclusive);
+        assert_eq!(
+            restart.lease_requests[0].resource_id,
+            "system:node/linux-01/service/sshd"
+        );
+        assert!(
+            restart
+                .impact
+                .may_affect
+                .contains(&"platform:on-node/linux-01".to_owned())
+        );
+        assert!(
+            restart
+                .impact
+                .may_affect
+                .contains(&"application:on-node/linux-01".to_owned())
+        );
+        assert!(
+            restart
+                .impact
+                .does_not_affect
+                .contains(&"system:node/linux-01/package-db".to_owned())
+        );
+        assert!(
+            restart
+                .impact
+                .does_not_affect
+                .contains(&"system:node/linux-01/firewall".to_owned())
+        );
+        assert!(restart.verification.required.iter().any(|check| {
+            check.id == "service_active" && check.tier == VerificationTier::DirectImpact
+        }));
+        assert!(restart.verification.skipped.iter().any(|skipped| {
+            skipped.check_id == "package_audit" && skipped.reason.contains("package-db")
+        }));
+        assert!(restart.verification.skipped.iter().any(|skipped| {
+            skipped.check_id == "firewall_audit" && skipped.reason.contains("firewall")
+        }));
+        assert!(restart.verification.skipped_checks_have_reasons());
+        assert_eq!(plan.run.impact, restart.impact);
+        assert_eq!(plan.run.verification, restart.verification);
+    }
+
+    #[test]
+    fn service_unhealthy_planning_fails_closed_for_bad_capability_or_node() {
+        let mut report = capability_report(
+            "freebsd-01",
+            OperatingSystem::FreeBsd,
+            [
+                "os.freebsd",
+                "service.freebsd-rc",
+                "logs.syslog-file",
+                "process.procstat",
+                "storage.df",
+                "privilege.sudo-helper",
+            ],
+        );
+        report
+            .capabilities
+            .retain(|capability| capability.as_str() != "service.freebsd-rc");
+
+        let missing_capability = plan_service_unhealthy_runbook(
+            &ServiceUnhealthyRunbookRequest::new("run-freebsd", "freebsd-01", "sshd"),
+            &report,
+        )
+        .expect_err("missing native service manager should fail closed");
+        assert!(matches!(
+            missing_capability,
+            ServiceUnhealthyPlanError::MissingRequiredCapability {
+                capability,
+                ..
+            } if capability == Capability::new("service.freebsd-rc")
+        ));
+
+        let node_mismatch = plan_service_unhealthy_runbook(
+            &ServiceUnhealthyRunbookRequest::new("run-linux", "other-node", "sshd"),
+            &capability_report(
+                "linux-01",
+                OperatingSystem::Linux,
+                [
+                    "os.linux",
+                    "service.systemd",
+                    "logs.journald",
+                    "process.procfs",
+                    "storage.df",
+                    "privilege.sudo-helper",
+                ],
+            ),
+        )
+        .expect_err("node mismatch should fail closed");
+        assert_eq!(
+            node_mismatch,
+            ServiceUnhealthyPlanError::NodeMismatch {
+                requested_node_id: "other-node".to_owned(),
+                report_node_id: "linux-01".to_owned(),
+            }
+        );
     }
 
     #[test]
@@ -2658,6 +3190,19 @@ mod tests {
                 ActionKind::ServiceRestart,
                 "system:node/prod-web-01/service/sshd",
             )]),
+        )
+    }
+
+    fn capability_report<const N: usize>(
+        node_id: &str,
+        os: OperatingSystem,
+        capabilities: [&str; N],
+    ) -> CapabilityReport {
+        CapabilityReport::new(
+            node_id,
+            os,
+            capabilities.into_iter().map(Capability::new),
+            [],
         )
     }
 }

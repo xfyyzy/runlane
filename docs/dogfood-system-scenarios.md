@@ -18,18 +18,40 @@ Choose scenarios that are:
 
 Goal: diagnose and optionally restart/reload a daemon.
 
+This is the first v0.1 executable dogfood target. The core planner turns
+`examples/runbooks/service-unhealthy.yaml` and a node capability report into a
+typed run plan for Linux, FreeBSD, and OpenBSD.
+
+The planner selects the native service manager for the reported OS:
+
+- Linux: `service.systemd`;
+- FreeBSD: `service.freebsd-rc`;
+- OpenBSD: `service.openbsd-rcctl`.
+
+It fails closed when the required native service manager, log reader, process
+snapshot, storage snapshot, or signed helper capability is missing. OpenBSD is
+not modeled as a systemd target.
+
 Resources:
 
-- `service:<name>`;
-- `logs:<name>`;
-- `port:<port>`;
-- maybe `endpoint:<url>`.
+- `system:node/<node>/service/<service>`;
+- `system:node/<node>/logs/<service>`;
+- `system:node/<node>/filesystem`;
+- `system:node/<node>/processes`.
+
+Restart lease:
+
+- `exclusive` on `system:node/<node>/service/<service>`;
+- approval required before restart/reload;
+- typed helper action only, not raw shell text.
 
 Verification:
 
 - service active;
-- expected port listening;
-- optional endpoint health.
+- helper result matches request;
+- package audit skipped with reason because package-db is not mutated;
+- firewall audit skipped with reason because firewall rules are not mutated;
+- dependent platform/application checks remain possible through the impact set.
 
 ### 2. Disk pressure
 
