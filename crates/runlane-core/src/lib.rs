@@ -878,6 +878,177 @@ impl HelperActionResponse {
     }
 }
 
+/// Approval outcome recorded in the audit ledger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalOutcome {
+    Approved,
+    Rejected,
+}
+
+/// Append-only audit event payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuditEventKind {
+    RunStateTransition {
+        from: RunState,
+        to: RunState,
+    },
+    ResourceLeaseRequested {
+        task_id: String,
+        resource_id: String,
+        mode: LeaseMode,
+    },
+    ResourceLeaseGranted {
+        lease_id: String,
+        resource_id: String,
+        mode: LeaseMode,
+    },
+    ResourceLeaseDenied {
+        resource_id: String,
+        mode: LeaseMode,
+        reason: String,
+    },
+    SchedulerDecision {
+        decision: SchedulerDecision,
+    },
+    VerificationSelected {
+        plan: VerificationPlan,
+    },
+    VerificationSkipped {
+        skipped: SkippedVerification,
+    },
+    ApprovalDecision {
+        approval_id: String,
+        actor: String,
+        outcome: ApprovalOutcome,
+    },
+    ActionResult {
+        action: ActionKind,
+        target: ActionTarget,
+        status: HelperActionStatus,
+    },
+    CognitiveReceiptGenerated {
+        receipt_id: String,
+    },
+}
+
+/// One immutable audit event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditEvent {
+    pub id: String,
+    pub run_id: String,
+    pub sequence: u64,
+    pub kind: AuditEventKind,
+}
+
+impl AuditEvent {
+    /// Creates an audit event.
+    #[must_use]
+    pub fn new(
+        id: impl Into<String>,
+        run_id: impl Into<String>,
+        sequence: u64,
+        kind: AuditEventKind,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            run_id: run_id.into(),
+            sequence,
+            kind,
+        }
+    }
+}
+
+/// Append-only in-memory audit ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditLedger {
+    events: Vec<AuditEvent>,
+}
+
+impl AuditLedger {
+    /// Creates an empty ledger.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self { events: Vec::new() }
+    }
+
+    /// Appends an event when its sequence is the next monotonic sequence.
+    pub fn append(&mut self, event: AuditEvent) -> Result<(), AuditAppendError> {
+        let expected = self.next_sequence();
+        if event.sequence != expected {
+            return Err(AuditAppendError::NonMonotonicSequence {
+                expected,
+                actual: event.sequence,
+            });
+        }
+        self.events.push(event);
+        Ok(())
+    }
+
+    /// Returns the immutable event slice.
+    #[must_use]
+    pub fn events(&self) -> &[AuditEvent] {
+        &self.events
+    }
+
+    /// Returns the next expected sequence number.
+    #[must_use]
+    pub fn next_sequence(&self) -> u64 {
+        self.events.len() as u64 + 1
+    }
+}
+
+/// Audit append failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditAppendError {
+    NonMonotonicSequence { expected: u64, actual: u64 },
+}
+
+/// Final run receipt intended for operator handoff and later review.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CognitiveReceipt {
+    pub id: String,
+    pub run_id: String,
+    pub layer: OperationalLayer,
+    pub impact: ImpactSet,
+    pub evidence: Vec<EvidenceEnvelope>,
+    pub verification: VerificationPlan,
+    pub skipped_checks: Vec<SkippedVerification>,
+    pub residual_risk: String,
+    pub takeover_notes: String,
+    pub rollback_notes: String,
+}
+
+impl CognitiveReceipt {
+    /// Creates a cognitive receipt.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: impl Into<String>,
+        run_id: impl Into<String>,
+        layer: OperationalLayer,
+        impact: ImpactSet,
+        evidence: impl IntoIterator<Item = EvidenceEnvelope>,
+        verification: VerificationPlan,
+        residual_risk: impl Into<String>,
+        takeover_notes: impl Into<String>,
+        rollback_notes: impl Into<String>,
+    ) -> Self {
+        let skipped_checks = verification.skipped.clone();
+        Self {
+            id: id.into(),
+            run_id: run_id.into(),
+            layer,
+            impact,
+            evidence: evidence.into_iter().collect(),
+            verification,
+            skipped_checks,
+            residual_risk: residual_risk.into(),
+            takeover_notes: takeover_notes.into(),
+            rollback_notes: rollback_notes.into(),
+        }
+    }
+}
+
 /// Helper-side validation context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HelperValidationContext {
@@ -1392,6 +1563,7 @@ pub fn is_valid_run_transition(from: RunState, to: RunState) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::ApprovalOutcome;
     use super::{
         ActionKind, ActionTarget, CapabilityLeaseClaims, HelperActionRequest, HelperAllowlist,
         HelperAllowlistEntry, HelperArgument, HelperRejection, HelperValidationContext,
@@ -1399,11 +1571,12 @@ mod tests {
         SchedulerWaitReason, SignedCapabilityLease,
     };
     use super::{
-        Capability, CapabilityFailure, CapabilityReport, ImpactSet, LeaseMode, OperatingSystem,
-        OperationalLayer, Resource, ResourceKind, ResourceLease, ResourceScope, Run, RunState,
-        SkippedVerification, Task, UnsupportedCapability, VerificationCheck, VerificationPlan,
-        VerificationPlanner, VerificationPolicy, VerificationTier, is_valid_run_transition,
-        validate_helper_request,
+        AuditAppendError, AuditEvent, AuditEventKind, AuditLedger, Capability, CapabilityFailure,
+        CapabilityReport, CognitiveReceipt, EvidenceEnvelope, ImpactSet, LeaseMode,
+        OperatingSystem, OperationalLayer, Resource, ResourceKind, ResourceLease, ResourceScope,
+        Run, RunState, SkippedVerification, Task, UnsupportedCapability, VerificationCheck,
+        VerificationPlan, VerificationPlanner, VerificationPolicy, VerificationTier,
+        is_valid_run_transition, validate_helper_request,
     };
 
     #[test]
@@ -1844,6 +2017,127 @@ mod tests {
             validate_helper_request(&request, &lease, &denied_context),
             Err(HelperRejection::LocalAllowlistDenied)
         );
+    }
+
+    #[test]
+    fn audit_ledger_is_append_only_with_monotonic_sequences() {
+        let mut ledger = AuditLedger::empty();
+        ledger
+            .append(AuditEvent::new(
+                "event-1",
+                "run-1",
+                1,
+                AuditEventKind::RunStateTransition {
+                    from: RunState::Created,
+                    to: RunState::Planned,
+                },
+            ))
+            .expect("first event should append");
+
+        let err = ledger
+            .append(AuditEvent::new(
+                "event-3",
+                "run-1",
+                3,
+                AuditEventKind::CognitiveReceiptGenerated {
+                    receipt_id: "receipt-1".to_owned(),
+                },
+            ))
+            .expect_err("ledger rejects skipped sequence numbers");
+
+        assert_eq!(
+            err,
+            AuditAppendError::NonMonotonicSequence {
+                expected: 2,
+                actual: 3,
+            }
+        );
+        assert_eq!(ledger.events().len(), 1);
+        assert_eq!(ledger.next_sequence(), 2);
+    }
+
+    #[test]
+    fn audit_events_cover_happy_path_sequence_and_receipt() {
+        let service_id = "system:node/prod-web-01/service/sshd".to_owned();
+        let target = ActionTarget::new(service_id.clone(), "sshd");
+        let impact = ImpactSet::writes(OperationalLayer::System, [service_id.clone()])
+            .with_may_affect(["application:on-node/prod-web-01".to_owned()]);
+        let verification = VerificationPlanner::new(VerificationPolicy::conservative())
+            .plan(&ActionKind::ServiceRestart, &impact);
+        let receipt = CognitiveReceipt::new(
+            "receipt-1",
+            "run-1",
+            OperationalLayer::System,
+            impact,
+            [EvidenceEnvelope::text("service_status", "sshd failed")],
+            verification.clone(),
+            "service may fail again if root cause remains",
+            "operator can inspect sshd logs and service status",
+            "restart previous config or stop the run manually",
+        );
+
+        let mut ledger = AuditLedger::empty();
+        append_events(
+            &mut ledger,
+            [
+                AuditEventKind::RunStateTransition {
+                    from: RunState::Created,
+                    to: RunState::Planned,
+                },
+                AuditEventKind::SchedulerDecision {
+                    decision: SchedulerDecision::Run {
+                        task_id: "collect-status".to_owned(),
+                        reason: super::SchedulerRunReason::DependenciesSatisfiedNoConflicts,
+                    },
+                },
+                AuditEventKind::ResourceLeaseRequested {
+                    task_id: "restart-service".to_owned(),
+                    resource_id: service_id.clone(),
+                    mode: LeaseMode::Exclusive,
+                },
+                AuditEventKind::ResourceLeaseGranted {
+                    lease_id: "lease-1".to_owned(),
+                    resource_id: service_id,
+                    mode: LeaseMode::Exclusive,
+                },
+                AuditEventKind::ApprovalDecision {
+                    approval_id: "approval-1".to_owned(),
+                    actor: "operator".to_owned(),
+                    outcome: ApprovalOutcome::Approved,
+                },
+                AuditEventKind::ActionResult {
+                    action: ActionKind::ServiceRestart,
+                    target,
+                    status: super::HelperActionStatus::Succeeded,
+                },
+                AuditEventKind::VerificationSelected { plan: verification },
+                AuditEventKind::CognitiveReceiptGenerated {
+                    receipt_id: receipt.id.clone(),
+                },
+            ],
+        );
+
+        assert_eq!(ledger.events().len(), 8);
+        assert_eq!(receipt.layer, OperationalLayer::System);
+        assert_eq!(receipt.evidence.len(), 1);
+        assert_eq!(receipt.skipped_checks, receipt.verification.skipped);
+        assert!(receipt.residual_risk.contains("root cause"));
+        assert!(receipt.takeover_notes.contains("operator"));
+        assert!(receipt.rollback_notes.contains("restart previous config"));
+    }
+
+    fn append_events<const N: usize>(ledger: &mut AuditLedger, kinds: [AuditEventKind; N]) {
+        for (index, kind) in kinds.into_iter().enumerate() {
+            let sequence = u64::try_from(index).expect("test event index fits in u64") + 1;
+            ledger
+                .append(AuditEvent::new(
+                    format!("event-{sequence}"),
+                    "run-1",
+                    sequence,
+                    kind,
+                ))
+                .expect("test events have monotonic sequences");
+        }
     }
 
     fn signed_service_restart_lease(
