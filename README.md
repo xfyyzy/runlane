@@ -197,6 +197,13 @@ cargo run -p runlane -- fleet validate examples/fleet
 cargo run -p runlane -- server gitops sync examples/fleet
 ```
 
+Exercise the current in-process agent/server boundary:
+
+```bash
+cargo run -p runlane-server -- demo-control-plane
+cargo run -p runlane-agent -- demo-enroll-pull
+```
+
 ## License
 
 BSD-2-Clause — see [`LICENSE`](LICENSE).

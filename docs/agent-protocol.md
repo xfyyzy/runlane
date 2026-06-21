@@ -2,8 +2,10 @@
 
 Runlane agents pull work from the server. Nodes do not need inbound ports.
 
-This document defines the v0.1 protocol contract before real network behavior
-is implemented.
+This document defines the v0.1 protocol contract. The current implementation
+provides an in-process control-plane boundary with the same validation
+semantics; adding an HTTP transport must call that boundary rather than
+inventing a second path.
 
 ## Transport And Identity
 
@@ -124,3 +126,17 @@ v0.1 protocol APIs:
 
 All adapter and CLI surfaces should call these APIs rather than inventing a
 separate execution path.
+
+## Local Demo Boundary
+
+The current CI-safe executable boundary is in-process:
+
+```bash
+cargo run -p runlane-server -- demo-control-plane
+cargo run -p runlane-agent -- demo-enroll-pull
+```
+
+These commands exercise enrollment token validation, agent enrollment, typed
+task pull, structured result submission, and audit events without requiring
+inbound node ports. The task payload is typed data; there is no shell command
+field.

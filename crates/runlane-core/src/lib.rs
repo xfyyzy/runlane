@@ -3,6 +3,7 @@
 //! This crate intentionally contains no network, database, or OS-specific code.
 
 pub mod fleet;
+pub mod runtime;
 
 use std::collections::BTreeMap;
 
@@ -1487,6 +1488,36 @@ pub enum ApprovalOutcome {
 /// Append-only audit event payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuditEventKind {
+    EnrollmentTokenCreated {
+        token_id: String,
+        node_id: String,
+    },
+    AgentEnrolled {
+        node_id: String,
+        os: OperatingSystem,
+    },
+    AgentTaskPulled {
+        envelope_id: String,
+        task_id: String,
+        node_id: String,
+    },
+    AgentTaskRejected {
+        node_id: String,
+        reason: String,
+    },
+    AgentResultAccepted {
+        envelope_id: String,
+        task_id: String,
+        node_id: String,
+    },
+    AgentResultRejected {
+        envelope_id: String,
+        reason: String,
+    },
+    AgentResultSpooled {
+        spool_id: String,
+        reason: SpoolReason,
+    },
     RunStateTransition {
         from: RunState,
         to: RunState,
