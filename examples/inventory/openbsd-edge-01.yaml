@@ -1,0 +1,19 @@
+id: openbsd-edge-01
+hostname: openbsd-edge-01.example.internal
+os: openbsd
+labels:
+  runlane.io/env: prod
+  runlane.io/role: edge
+  runlane.io/layer-primary: system
+capabilities:
+  requested:
+    - os.openbsd
+    - service.openbsd-rcctl
+    - logs.syslog-file
+    - process.ps
+    - socket.fstat
+    - storage.df
+    - firewall.pf
+    - privilege.doas-helper
+policy:
+  profile: production
