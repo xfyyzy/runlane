@@ -9,11 +9,13 @@ Closes #
 ## Verification
 
 Paste real command output or durable CI links. Do not write generic "verified"
-claims without evidence.
+claims without evidence. Leave a checkbox unchecked if the command was not
+run, and explain why. See `docs/verification-matrix.md`.
 
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo check --workspace`
 - [ ] `cargo test --workspace`
+- [ ] Required cross-build or VM checks were run, or marked not run with a reason.
 
 Additional checks:
 

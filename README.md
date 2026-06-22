@@ -161,7 +161,8 @@ Read in this order before implementing:
 12. [`docs/dogfood-system-scenarios.md`](docs/dogfood-system-scenarios.md)
 13. [`docs/user-journey-v0.1.md`](docs/user-journey-v0.1.md)
 14. [`docs/milestones/v0.1.md`](docs/milestones/v0.1.md)
-15. [`docs/adr/0001-cross-platform-native-agent.md`](docs/adr/0001-cross-platform-native-agent.md)
+15. [`docs/verification-matrix.md`](docs/verification-matrix.md)
+16. [`docs/adr/0001-cross-platform-native-agent.md`](docs/adr/0001-cross-platform-native-agent.md)
 
 ## Development
 
@@ -173,6 +174,10 @@ cargo fmt --all -- --check
 cargo check --workspace
 cargo test --workspace
 ```
+
+Current CI requires the Ubuntu Rust `fmt`, `check`, and `test` job plus the PR
+policy check. Cross-build and VM validation are not part of current CI; report
+them as local/manual checks using [`docs/verification-matrix.md`](docs/verification-matrix.md).
 
 Cross-platform validation must keep build and runtime baselines aligned. Linux
 and FreeBSD release artifacts may be cross-built when the target sysroot and

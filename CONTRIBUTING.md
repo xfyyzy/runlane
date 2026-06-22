@@ -11,7 +11,8 @@ Before implementing, read:
 5. `docs/operational-layer-model.md`
 6. `docs/execution-semantics.md`
 7. `docs/platform-model.md`
-8. `docs/coding-agent-brief.md`
+8. `docs/verification-matrix.md`
+9. `docs/coding-agent-brief.md`
 
 `AGENTS.md` defines the repository execution rules for human-supervised agents: no silent fallback, explicit failure, single-path convergence, prompt commits, tmux for long-running tasks, and verifiable handoff.
 
@@ -46,6 +47,12 @@ cargo fmt --all -- --check
 cargo check --workspace
 cargo test --workspace
 ```
+
+Current CI runs the Rust checks above on Ubuntu and runs the PR body policy
+check. It does not run release cross-builds or BSD VM smoke. Use
+`docs/verification-matrix.md` to decide which local, manual, cross-build, or VM
+checks apply to a change, and report checks as run, not run, or blocked with
+real command output or CI links.
 
 ## Design rules
 
