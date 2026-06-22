@@ -57,6 +57,7 @@ Use targeted smoke commands when the change touches the corresponding surface:
 |---|---|
 | Fleet parsing or examples | `cargo run -p runlane -- fleet validate examples/fleet` and `cargo run -p runlane -- server gitops sync examples/fleet` |
 | Agent/server pull loop | `cargo run -p runlane-server -- demo-control-plane` and `cargo run -p runlane-agent -- demo-enroll-pull` |
+| Agent/server HTTP transport | `cargo test -p runlane-server http -- --nocapture` and, when a live smoke is useful, `cargo run -p runlane-server -- http demo-serve 127.0.0.1:17890` |
 | Approval API/CLI | `cargo run -p runlane -- approval list`, `show`, `approve`, and `reject` |
 | Helper boundary | `cargo run -p runlane-helper -- --help` plus a dry-run accept/reject fixture when helper request logic changes |
 | E2E receipt path | `cargo run -p runlane -- demo service-unhealthy examples/fleet` and `cargo run -p runlane -- receipt show run-demo-service-unhealthy examples/fleet` |

@@ -22,6 +22,76 @@ The enrolled identity binds:
 The server rejects task pulls and result submissions when the mTLS identity does
 not match the node id in the request.
 
+The current v0.1.1 HTTP wrapper models the identity extraction boundary with
+headers:
+
+```text
+x-runlane-node-id: prod-web-01
+x-runlane-certificate-fingerprint: sha256:...
+```
+
+Handlers fail closed when either header is missing, when the request `node_id`
+does not match the extracted node id, or when the extracted certificate
+fingerprint does not match the enrolled agent record. These headers are a local
+development boundary until mTLS extraction is wired in; they are not a
+production-secure plaintext identity mechanism.
+
+## Enrollment Token Creation
+
+The server creates short-lived enrollment tokens:
+
+```text
+POST /v1/enrollment/tokens
+```
+
+Request:
+
+```yaml
+token_id: token-prod-web-01
+token: secret-token-material
+node_id: prod-web-01
+platform_family: linux
+server_trust_root: trust-root-fingerprint
+expires_at_unix_seconds: 1780000060
+nonce: enroll-nonce-123
+```
+
+Response:
+
+```yaml
+status: created
+token_id: token-prod-web-01
+node_id: prod-web-01
+```
+
+## Agent Enrollment
+
+The agent enrolls with a token:
+
+```text
+POST /v1/agent/enroll
+```
+
+Request:
+
+```yaml
+token: secret-token-material
+node_id: prod-web-01
+platform_family: linux
+certificate_fingerprint: sha256:...
+server_trust_root: trust-root-fingerprint
+now_unix_seconds: 1780000000
+```
+
+Response:
+
+```yaml
+node_id: prod-web-01
+platform_family: linux
+certificate_fingerprint: sha256:...
+server_trust_root: trust-root-fingerprint
+```
+
 ## Local Config And Identity State
 
 The agent loads local configuration before startup. The config declares:
@@ -56,6 +126,7 @@ Request:
 
 ```yaml
 node_id: prod-web-01
+now_unix_seconds: 1780000001
 capability_report_version: cap-123
 last_seen_task_nonce: nonce-previous
 ```
@@ -113,6 +184,7 @@ task_id: task-123
 node_id: prod-web-01
 nonce: result-nonce-123
 status: succeeded
+now_unix_seconds: 1780000002
 evidence:
   - source: service_status
     content_type: text/plain
@@ -135,6 +207,37 @@ If result submission fails, the agent writes a local spool item containing:
 
 Spooling is not success. It is durable local evidence that must be retried or
 reported when connectivity returns.
+
+Replay uses the same result submission validation boundary:
+
+```text
+POST /v1/agent/spool/replay
+```
+
+Request:
+
+```yaml
+spool_id: spool-123
+reason: server unavailable
+now_unix_seconds: 1780000002
+result:
+  envelope_id: env-123
+  run_id: run-123
+  task_id: task-123
+  node_id: prod-web-01
+  nonce: result-nonce-123
+  status: succeeded
+  evidence:
+    - source: service_status
+      content_type: text/plain
+      body: sshd active
+      truncated: false
+  audit_correlation_id: audit-123
+```
+
+The server accepts replay only when the original envelope/result still pass the
+same core result checks. Replay does not bypass identity, envelope, task, run,
+node, expiry, or nonce validation.
 
 ## Minimum Server API
 
@@ -175,3 +278,11 @@ cargo run -p runlane-agent -- run --config <agent.yaml>
 Startup fails closed for missing config, missing identity metadata, mismatched
 identity, unsafe permissions, platform mismatch, or missing trust/certificate
 files.
+
+The current HTTP wrapper can be exercised through unit tests or a local demo
+server:
+
+```bash
+cargo test -p runlane-server http -- --nocapture
+cargo run -p runlane-server -- http demo-serve 127.0.0.1:17890
+```
