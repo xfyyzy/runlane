@@ -1307,6 +1307,8 @@ pub enum CapabilityFailure {
 pub enum ActionKind {
     ServiceRestart,
     ServiceReload,
+    PackageUpdate,
+    NodeReboot,
     RunAllowlistedScript,
     RemoveAllowlistedFile,
 }
@@ -1365,6 +1367,10 @@ impl VerificationPlanner {
             (OperationalLayer::Platform, ActionKind::ServiceReload) => {
                 self.plan_platform_reload(impact)
             }
+            (OperationalLayer::System, ActionKind::PackageUpdate) => {
+                self.plan_system_package_update(impact)
+            }
+            (OperationalLayer::System, ActionKind::NodeReboot) => self.plan_system_reboot(impact),
             (OperationalLayer::System, _)
                 if impact
                     .writes
@@ -1433,44 +1439,110 @@ impl VerificationPlanner {
     }
 
     fn plan_system_package_mutation(&self, impact: &ImpactSet) -> VerificationPlan {
+        self.plan_system_package_update(impact)
+    }
+
+    fn plan_system_package_update(&self, impact: &ImpactSet) -> VerificationPlan {
+        let package_resource = package_resource(impact);
+        let affected_service_resource = affected_service_resource(impact);
+        let reboot_resource = reboot_resource(impact);
+
         let mut required = vec![
             VerificationCheck::new(
                 "package_db_consistent",
-                primary_resource(impact),
+                package_resource.clone(),
+                VerificationTier::DirectImpact,
+            ),
+            VerificationCheck::new(
+                "package_state_matches_policy",
+                package_resource.clone(),
                 VerificationTier::DirectImpact,
             ),
             VerificationCheck::new(
                 "changed_files_classified",
-                primary_resource(impact),
+                package_resource.clone(),
                 VerificationTier::DirectImpact,
             ),
             VerificationCheck::new(
                 "affected_services_identified",
-                primary_resource(impact),
+                package_resource.clone(),
+                VerificationTier::Dependent,
+            ),
+            VerificationCheck::new(
+                "reboot_required_detected",
+                reboot_resource.unwrap_or_else(|| package_resource.clone()),
                 VerificationTier::Dependent,
             ),
         ];
+        if let Some(affected_service_resource) = affected_service_resource {
+            required.push(VerificationCheck::new(
+                "service_health_for_affected_services",
+                affected_service_resource,
+                VerificationTier::Dependent,
+            ));
+        }
         if self
             .policy
             .require_broad_package_audit_for_system_package_mutation
         {
             required.push(VerificationCheck::new(
                 "package_audit",
-                primary_resource(impact),
+                package_resource,
                 VerificationTier::BroadRegression,
+            ));
+        }
+
+        let mut skipped = vec![SkippedVerification::new(
+            "full_disk_scan",
+            "package mutation classified changed files without broad filesystem writes",
+        )];
+        if !required
+            .iter()
+            .any(|check| check.id == "service_health_for_affected_services")
+        {
+            skipped.push(SkippedVerification::new(
+                "service_health_for_affected_services",
+                "package impact did not declare affected service resources; affected_services_identified owns discovery",
             ));
         }
 
         VerificationPlan {
             required,
-            conditional: vec![VerificationCheck::new(
-                "service_health_for_affected_services",
-                dependent_resource(impact),
-                VerificationTier::Dependent,
-            )],
+            conditional: Vec::new(),
+            skipped,
+        }
+    }
+
+    fn plan_system_reboot(&self, impact: &ImpactSet) -> VerificationPlan {
+        let reboot_resource = reboot_resource(impact).unwrap_or_else(|| primary_resource(impact));
+        let dependent_resource = dependent_resource(impact);
+        VerificationPlan {
+            required: vec![
+                VerificationCheck::new(
+                    "drain_completed",
+                    reboot_resource.clone(),
+                    VerificationTier::Precondition,
+                ),
+                VerificationCheck::new(
+                    "reboot_completed",
+                    reboot_resource.clone(),
+                    VerificationTier::DirectImpact,
+                ),
+                VerificationCheck::new(
+                    "node_health_after_reboot",
+                    reboot_resource,
+                    VerificationTier::DirectImpact,
+                ),
+                VerificationCheck::new(
+                    "affected_services_healthy_after_reboot",
+                    dependent_resource,
+                    VerificationTier::Dependent,
+                ),
+            ],
+            conditional: Vec::new(),
             skipped: vec![SkippedVerification::new(
-                "full_disk_scan",
-                "package mutation classified changed files without broad filesystem writes",
+                "package_audit",
+                "node reboot does not mutate package database; package update verification owns package state",
             )],
         }
     }
@@ -1552,6 +1624,33 @@ fn dependent_resource(impact: &ImpactSet) -> String {
         .first()
         .cloned()
         .unwrap_or_else(|| primary_resource(impact))
+}
+
+fn package_resource(impact: &ImpactSet) -> String {
+    impact
+        .writes
+        .iter()
+        .chain(impact.may_affect.iter())
+        .find(|resource| resource.contains("package-db"))
+        .cloned()
+        .unwrap_or_else(|| primary_resource(impact))
+}
+
+fn reboot_resource(impact: &ImpactSet) -> Option<String> {
+    impact
+        .writes
+        .iter()
+        .chain(impact.may_affect.iter())
+        .find(|resource| resource.contains("/reboot"))
+        .cloned()
+}
+
+fn affected_service_resource(impact: &ImpactSet) -> Option<String> {
+    impact
+        .may_affect
+        .iter()
+        .find(|resource| resource.contains("/service/"))
+        .cloned()
 }
 
 /// Target bound to a typed helper action.
@@ -2587,6 +2686,12 @@ mod tests {
                 ResourceScope::Node("prod-web-01".to_owned()),
             ),
             Resource::new(
+                "system:node/prod-web-01/reboot",
+                OperationalLayer::System,
+                ResourceKind::Reboot,
+                ResourceScope::Node("prod-web-01".to_owned()),
+            ),
+            Resource::new(
                 "platform:postgres/main",
                 OperationalLayer::Platform,
                 ResourceKind::Database,
@@ -2612,6 +2717,7 @@ mod tests {
         assert_eq!(
             layers,
             [
+                OperationalLayer::System,
                 OperationalLayer::System,
                 OperationalLayer::Platform,
                 OperationalLayer::Application,
@@ -3252,6 +3358,58 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_blocks_platform_and_application_mutation_during_system_reboot() {
+        let snapshot = SchedulerSnapshot::empty()
+            .with_active_leases([ResourceLease::for_run(
+                "lease-reboot",
+                "run-system",
+                "system:node/prod-web-01/reboot",
+                LeaseMode::Reboot,
+                "node reboot in progress",
+            )])
+            .with_dependency_paths([
+                ResourceDependencyPath::new(
+                    "system:node/prod-web-01/reboot",
+                    "platform:on-node/prod-web-01",
+                ),
+                ResourceDependencyPath::new(
+                    "system:node/prod-web-01/reboot",
+                    "application:on-node/prod-web-01",
+                ),
+            ]);
+
+        let platform_task = Task::new("reload-gateway", OperationalLayer::Platform)
+            .with_writes(["platform:on-node/prod-web-01".to_owned()]);
+        let application_task = Task::new("restart-app", OperationalLayer::Application)
+            .with_writes(["application:on-node/prod-web-01".to_owned()]);
+
+        assert_eq!(
+            snapshot.decide_task(&platform_task),
+            SchedulerDecision::Wait {
+                task_id: "reload-gateway".to_owned(),
+                reason: SchedulerWaitReason::LowerLayerDisruption {
+                    lower_resource_id: "system:node/prod-web-01/reboot".to_owned(),
+                    upper_resource_id: "platform:on-node/prod-web-01".to_owned(),
+                    existing_lease_id: "lease-reboot".to_owned(),
+                    existing_mode: LeaseMode::Reboot,
+                },
+            }
+        );
+        assert_eq!(
+            snapshot.decide_task(&application_task),
+            SchedulerDecision::Wait {
+                task_id: "restart-app".to_owned(),
+                reason: SchedulerWaitReason::LowerLayerDisruption {
+                    lower_resource_id: "system:node/prod-web-01/reboot".to_owned(),
+                    upper_resource_id: "application:on-node/prod-web-01".to_owned(),
+                    existing_lease_id: "lease-reboot".to_owned(),
+                    existing_mode: LeaseMode::Reboot,
+                },
+            }
+        );
+    }
+
+    #[test]
     fn scheduler_waits_for_incomplete_task_dependency() {
         let snapshot =
             SchedulerSnapshot::empty().with_completed_tasks(["collect-status".to_owned()]);
@@ -3298,19 +3456,29 @@ mod tests {
                 .iter()
                 .any(|skipped| skipped.check_id == "full_disk_scan")
         );
+        assert!(
+            !plan
+                .required
+                .iter()
+                .any(|check| check.id == "reboot_required_detected")
+        );
         assert!(plan.skipped_checks_have_reasons());
     }
 
     #[test]
-    fn verification_planner_can_select_broader_system_package_checks() {
+    fn verification_planner_selects_package_update_and_reboot_required_checks() {
         let impact = ImpactSet::writes(
             OperationalLayer::System,
             ["system:node/prod-web-01/package-db".to_owned()],
         )
-        .with_may_affect(["application:on-node/prod-web-01".to_owned()]);
+        .with_may_affect([
+            "system:node/prod-web-01/service/sshd".to_owned(),
+            "system:node/prod-web-01/reboot".to_owned(),
+            "application:on-node/prod-web-01".to_owned(),
+        ]);
 
         let plan = VerificationPlanner::new(VerificationPolicy::conservative())
-            .plan(&ActionKind::RunAllowlistedScript, &impact);
+            .plan(&ActionKind::PackageUpdate, &impact);
 
         assert!(
             plan.required.iter().any(|check| check.id == "package_audit"
@@ -3319,7 +3487,69 @@ mod tests {
         assert!(
             plan.required
                 .iter()
+                .any(|check| check.id == "package_state_matches_policy")
+        );
+        assert!(
+            plan.required
+                .iter()
                 .any(|check| check.id == "affected_services_identified")
+        );
+        assert!(
+            plan.required
+                .iter()
+                .any(|check| check.id == "service_health_for_affected_services"
+                    && check.resource_id == "system:node/prod-web-01/service/sshd")
+        );
+        assert!(
+            plan.required
+                .iter()
+                .any(|check| check.id == "reboot_required_detected"
+                    && check.resource_id == "system:node/prod-web-01/reboot")
+        );
+        assert!(plan.skipped_checks_have_reasons());
+    }
+
+    #[test]
+    fn verification_planner_selects_reboot_class_checks_without_package_audit() {
+        let impact = ImpactSet::writes(
+            OperationalLayer::System,
+            ["system:node/prod-web-01/reboot".to_owned()],
+        )
+        .with_may_affect([
+            "system:node/prod-web-01/service/sshd".to_owned(),
+            "platform:on-node/prod-web-01".to_owned(),
+            "application:on-node/prod-web-01".to_owned(),
+        ])
+        .with_does_not_affect(["system:node/prod-web-01/package-db".to_owned()]);
+
+        let plan = VerificationPlanner::new(VerificationPolicy::conservative())
+            .plan(&ActionKind::NodeReboot, &impact);
+
+        assert!(
+            plan.required
+                .iter()
+                .any(|check| check.id == "drain_completed"
+                    && check.tier == VerificationTier::Precondition)
+        );
+        assert!(
+            plan.required
+                .iter()
+                .any(|check| check.id == "reboot_completed")
+        );
+        assert!(
+            plan.required
+                .iter()
+                .any(|check| check.id == "node_health_after_reboot")
+        );
+        assert!(
+            plan.required
+                .iter()
+                .any(|check| check.id == "affected_services_healthy_after_reboot")
+        );
+        assert!(
+            plan.skipped
+                .iter()
+                .any(|skipped| skipped.check_id == "package_audit")
         );
         assert!(plan.skipped_checks_have_reasons());
     }
@@ -3638,6 +3868,52 @@ mod tests {
         assert!(receipt.residual_risk.contains("root cause"));
         assert!(receipt.takeover_notes.contains("operator"));
         assert!(receipt.rollback_notes.contains("restart previous config"));
+    }
+
+    #[test]
+    fn audit_events_record_package_update_selected_and_skipped_checks() {
+        let impact = ImpactSet::writes(
+            OperationalLayer::System,
+            ["system:node/prod-web-01/package-db".to_owned()],
+        )
+        .with_may_affect([
+            "system:node/prod-web-01/service/sshd".to_owned(),
+            "system:node/prod-web-01/reboot".to_owned(),
+        ]);
+        let verification = VerificationPlanner::new(VerificationPolicy::conservative())
+            .plan(&ActionKind::PackageUpdate, &impact);
+        let skipped = verification
+            .skipped
+            .first()
+            .cloned()
+            .expect("package update records skipped checks with reasons");
+
+        let mut ledger = AuditLedger::empty();
+        append_events(
+            &mut ledger,
+            [
+                AuditEventKind::VerificationSelected {
+                    plan: verification.clone(),
+                },
+                AuditEventKind::VerificationSkipped {
+                    skipped: skipped.clone(),
+                },
+            ],
+        );
+
+        assert!(ledger.events().iter().any(|event| matches!(
+            &event.kind,
+            AuditEventKind::VerificationSelected { plan }
+                if plan
+                    .required
+                    .iter()
+                    .any(|check| check.id == "reboot_required_detected")
+        )));
+        assert!(ledger.events().iter().any(|event| matches!(
+            &event.kind,
+            AuditEventKind::VerificationSkipped { skipped }
+                if skipped.check_id == "full_disk_scan" && !skipped.reason.is_empty()
+        )));
     }
 
     fn append_events<const N: usize>(ledger: &mut AuditLedger, kinds: [AuditEventKind; N]) {

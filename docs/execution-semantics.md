@@ -251,7 +251,8 @@ Expected verification:
 Expected verification is broader:
 
 - package manager database lock;
-- affected packages;
+- package state still matches declared policy;
+- package database is consistent;
 - services owning upgraded files;
 - restart-required detection;
 - service-specific checks;
@@ -259,6 +260,30 @@ Expected verification is broader:
 - optional node-level health.
 
 This may justify Tier 3 checks.
+
+### System reboot or drain
+
+A reboot is not just another service restart. It is a node-level disruptive
+operation represented by `system:node/<node>/reboot`.
+
+Expected scheduling and verification:
+
+- a `drain` or `reboot` lease on the node blocks dependent platform and
+  application mutations on that node;
+- drain completion is verified before the reboot action;
+- reboot completion and node health are direct-impact checks;
+- affected services are checked after reboot when they are declared in the
+  impact set;
+- package audit is skipped with an explicit reason unless the same run also
+  mutated `package-db`.
+
+Service restart, package update, and reboot/drain are separate impact scopes:
+
+| Operation | Writes | Blocks upper layers | Typical checks |
+|---|---|---:|---|
+| Service restart | `system:node/<node>/service/<name>` | no, unless declared by policy | helper result, service active |
+| Package update | `system:node/<node>/package-db` | when drain/reboot is also leased | package state, changed files, affected services, reboot-required detection |
+| Reboot/drain | `system:node/<node>/reboot` | yes | drain completed, reboot completed, node health, affected services |
 
 ## Runbook fields required for scheduling
 

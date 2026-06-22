@@ -150,12 +150,42 @@ verification:
   strategy: layer_impact_scoped
   required:
     - package_db_consistent
+    - package_state_matches_policy
     - changed_files_classified
     - affected_services_identified
+    - service_health_for_affected_services
     - restart_required_detected
   conditional:
-    - service_health_for_affected_services
     - application_canary_for_critical_apps
+approval: required
+```
+
+### System layer: node reboot or drain
+
+```yaml
+name: system-node-reboot
+layer: system
+resources:
+  writes:
+    - system:node/{{ node }}/reboot
+  may_affect:
+    - platform:on-node/{{ node }}
+    - application:on-node/{{ node }}
+leases:
+  - resource: system:node/{{ node }}/reboot
+    mode: drain
+  - resource: system:node/{{ node }}/reboot
+    mode: reboot
+verification:
+  strategy: layer_impact_scoped
+  required:
+    - drain_completed
+    - reboot_completed
+    - node_health_after_reboot
+    - affected_services_healthy_after_reboot
+  skipped_with_reason:
+    - check: package_audit
+      reason: node reboot did not mutate package database
 approval: required
 ```
 
