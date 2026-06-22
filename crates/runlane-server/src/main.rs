@@ -1,8 +1,10 @@
-use std::env;
+use std::{env, process};
 
 use runlane_core::{
     AgentResultStatus, AgentResultSubmission, AgentTaskEnvelope, Capability, OperatingSystem,
     RunState,
+    durable::LocalServerState,
+    e2e::run_service_unhealthy_simulation,
     runtime::{
         AgentEnrollmentRequest, ControlPlane, EnrollmentToken, PendingAgentTask, TypedTaskPayload,
         runtime_text_evidence,
@@ -10,15 +12,55 @@ use runlane_core::{
 };
 
 fn main() {
-    if env::args().nth(1).as_deref() == Some("demo-control-plane") {
-        demo_control_plane();
-        return;
+    if let Err(error) = run(env::args().skip(1).collect()) {
+        eprintln!("{error}");
+        process::exit(1);
     }
+}
 
-    println!(
-        "runlane-server skeleton; initial_run_state={:?}",
-        RunState::Created
-    );
+fn run(args: Vec<String>) -> Result<(), String> {
+    match args.as_slice() {
+        [] => {
+            println!(
+                "runlane-server skeleton; initial_run_state={:?}",
+                RunState::Created
+            );
+            Ok(())
+        }
+        [demo] if demo == "demo-control-plane" => {
+            demo_control_plane();
+            Ok(())
+        }
+        [state, demo_write, state_dir, fleet_path]
+            if state == "state" && demo_write == "demo-write" =>
+        {
+            let simulation =
+                run_service_unhealthy_simulation(fleet_path).map_err(|error| error.to_string())?;
+            let state = LocalServerState::init(state_dir).map_err(|error| error.to_string())?;
+            state
+                .append_ledger(&simulation.ledger)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "server state demo-write ok; run={}; events={}; ledger={}",
+                simulation.run_id,
+                simulation.ledger.events().len(),
+                state.layout.audit_ledger.display()
+            );
+            Ok(())
+        }
+        [state, receipt, state_dir, run_id] if state == "state" && receipt == "receipt" => {
+            let state = LocalServerState::open(state_dir);
+            let receipt = state
+                .render_receipt(run_id)
+                .map_err(|error| error.to_string())?;
+            println!("{}", receipt.render_text());
+            Ok(())
+        }
+        _ => Err(format!(
+            "unsupported runlane-server command: {}",
+            args.join(" ")
+        )),
+    }
 }
 
 fn demo_control_plane() {

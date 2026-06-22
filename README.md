@@ -156,13 +156,14 @@ Read in this order before implementing:
 7. [`docs/platform-model.md`](docs/platform-model.md)
 8. [`docs/helper-contract.md`](docs/helper-contract.md)
 9. [`docs/agent-protocol.md`](docs/agent-protocol.md)
-10. [`docs/fleet-repo-schema.md`](docs/fleet-repo-schema.md)
-11. [`docs/coding-agent-brief.md`](docs/coding-agent-brief.md)
-12. [`docs/dogfood-system-scenarios.md`](docs/dogfood-system-scenarios.md)
-13. [`docs/user-journey-v0.1.md`](docs/user-journey-v0.1.md)
-14. [`docs/milestones/v0.1.md`](docs/milestones/v0.1.md)
-15. [`docs/verification-matrix.md`](docs/verification-matrix.md)
-16. [`docs/adr/0001-cross-platform-native-agent.md`](docs/adr/0001-cross-platform-native-agent.md)
+10. [`docs/server-state.md`](docs/server-state.md)
+11. [`docs/fleet-repo-schema.md`](docs/fleet-repo-schema.md)
+12. [`docs/coding-agent-brief.md`](docs/coding-agent-brief.md)
+13. [`docs/dogfood-system-scenarios.md`](docs/dogfood-system-scenarios.md)
+14. [`docs/user-journey-v0.1.md`](docs/user-journey-v0.1.md)
+15. [`docs/milestones/v0.1.md`](docs/milestones/v0.1.md)
+16. [`docs/verification-matrix.md`](docs/verification-matrix.md)
+17. [`docs/adr/0001-cross-platform-native-agent.md`](docs/adr/0001-cross-platform-native-agent.md)
 
 ## Development
 
@@ -222,6 +223,15 @@ Run the full CI-safe service-unhealthy simulation and render its receipt:
 ```bash
 cargo run -p runlane -- demo service-unhealthy examples/fleet
 cargo run -p runlane -- receipt show run-demo-service-unhealthy examples/fleet
+```
+
+Persist the same demo ledger to local server state and render the receipt after
+reload:
+
+```bash
+rm -rf /tmp/runlane-state-demo
+cargo run -p runlane-server -- state demo-write /tmp/runlane-state-demo examples/fleet
+cargo run -p runlane-server -- state receipt /tmp/runlane-state-demo run-demo-service-unhealthy
 ```
 
 ## License

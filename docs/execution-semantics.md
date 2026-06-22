@@ -331,3 +331,7 @@ Required receipt inputs include:
 
 Missing required events are explicit receipt-generation errors, not omitted
 sections.
+
+The local server state boundary persists audit events as an append-only ledger.
+Reloading that durable ledger must preserve the same receipt behavior: corrupt
+state, missing events, or non-monotonic events are explicit failures.
