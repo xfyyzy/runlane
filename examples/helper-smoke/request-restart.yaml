@@ -1,0 +1,6 @@
+lease_id: lease-helper-smoke
+action: service.restart
+target_resource_id: system:node/prod-web-01/service/sshd
+target_subject: sshd
+arguments:
+  service: sshd
