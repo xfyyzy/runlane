@@ -8,7 +8,9 @@ use config::{
     format_operating_system, init_config, install_identity, parse_operating_system, show_config,
     validate_agent_state,
 };
-use platform::{EvidenceKind, NativeBackend, PlatformBackend};
+use platform::{
+    CollectorExecutionError, CollectorRequest, EvidenceKind, NativeBackend, PlatformBackend,
+};
 use runlane_core::{
     AgentTaskEnvelope, Capability,
     runtime::{
@@ -36,6 +38,7 @@ fn run_cli(args: Vec<String>) -> Result<(), CliError> {
         }
         "config" => run_config_command(&args[1..]),
         "identity" => run_identity_command(&args[1..]),
+        "collect-smoke" => run_collect_smoke(&args[1..]),
         "run" => run_agent(&args[1..]),
         _ => Err(CliError::usage()),
     }
@@ -184,6 +187,45 @@ fn run_agent(args: &[String]) -> Result<(), CliError> {
     Ok(())
 }
 
+fn run_collect_smoke(args: &[String]) -> Result<(), CliError> {
+    let mut flags = FlagParser::new(args);
+    let service_name = flags.required("--service")?;
+    flags.finish()?;
+
+    let backend = NativeBackend::current();
+    if matches!(backend.os(), runlane_core::OperatingSystem::Unknown) {
+        return Err(CliError::Config(AgentConfigError::InvalidField {
+            field: "platform_family",
+            reason: "native collector smoke requires Linux, FreeBSD, or OpenBSD".to_owned(),
+        }));
+    }
+
+    for kind in [
+        EvidenceKind::ServiceStatus,
+        EvidenceKind::RecentLogs,
+        EvidenceKind::Disk,
+        EvidenceKind::Process,
+        EvidenceKind::Socket,
+    ] {
+        let request = match kind {
+            EvidenceKind::ServiceStatus | EvidenceKind::RecentLogs => {
+                CollectorRequest::service(kind, service_name.clone())?
+            }
+            EvidenceKind::Disk | EvidenceKind::Process | EvidenceKind::Socket => {
+                CollectorRequest::simple(kind)
+            }
+        };
+        let evidence = backend.collect_native(&request)?;
+        println!(
+            "runlane-agent collect-smoke; os={:?}; kind={kind:?}; source={}; bytes={}",
+            backend.os(),
+            evidence.source,
+            evidence.body.len()
+        );
+    }
+    Ok(())
+}
+
 fn current_supported_platform() -> Result<runlane_core::OperatingSystem, CliError> {
     let os = NativeBackend::current().os();
     if matches!(os, runlane_core::OperatingSystem::Unknown) {
@@ -269,6 +311,7 @@ fn service_status_fixture(os: runlane_core::OperatingSystem) -> &'static str {
 #[derive(Debug)]
 enum CliError {
     Config(AgentConfigError),
+    Collector(CollectorExecutionError),
     Usage,
 }
 
@@ -284,13 +327,20 @@ impl From<AgentConfigError> for CliError {
     }
 }
 
+impl From<CollectorExecutionError> for CliError {
+    fn from(value: CollectorExecutionError) -> Self {
+        Self::Collector(value)
+    }
+}
+
 impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Config(error) => write!(f, "{error}"),
+            Self::Collector(error) => write!(f, "{error}"),
             Self::Usage => write!(
                 f,
-                "usage: runlane-agent [demo-enroll-pull | config init|show|validate | identity install | run]"
+                "usage: runlane-agent [demo-enroll-pull | config init|show|validate | identity install | collect-smoke --service <name> | run]"
             ),
         }
     }
@@ -300,6 +350,7 @@ impl Error for CliError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Config(error) => Some(error),
+            Self::Collector(error) => Some(error),
             Self::Usage => None,
         }
     }

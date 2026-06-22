@@ -120,6 +120,27 @@ privilege.pfexec-helper
 
 Runbooks must require capabilities rather than assuming commands.
 
+## Collector command ownership
+
+Agent platform backends own native collector command construction. A runbook,
+an analyzer result, a log line, or user-supplied text may select typed
+capabilities and resources, but it must not supply a shell command or command
+fragment.
+
+For v0.1, the backend collector specs cover:
+
+- service status;
+- recent logs;
+- disk snapshot;
+- process snapshot;
+- listening sockets.
+
+Service collectors accept a validated service identifier, not an arbitrary
+argument string. The backend then maps that typed value into native commands:
+Linux uses `systemctl`/`journalctl`, FreeBSD uses `service` and syslog files,
+and OpenBSD uses `rcctl` and syslog files. Unsupported collectors or missing
+typed inputs fail closed with structured reasons.
+
 ## System-layer dogfood surface
 
 Runlane should initially focus on system resources:
@@ -161,6 +182,8 @@ When implementing Runlane, coding agents must follow these rules:
 6. Every platform backend must report unsupported capabilities explicitly.
 7. A runbook step with unsupported capabilities must fail closed with a clear reason.
 8. New OS support means adding backend drivers, not changing the runbook model.
+9. Native collector smoke should execute backend-owned commands through the
+   agent, not through runbook-authored shell.
 
 ## Example platform capability report
 

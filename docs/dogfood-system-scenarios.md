@@ -44,6 +44,17 @@ Command construction is owned by the platform backend. Runbooks and analyzer
 output select typed capabilities and resources; they do not supply shell
 commands.
 
+The agent can also execute the same collector specs against the local native
+backend:
+
+```bash
+cargo run -p runlane-agent -- collect-smoke --service sshd
+```
+
+This smoke exercises service status, recent logs, disk, process, and socket
+collectors. Linux, FreeBSD, and OpenBSD use different native commands, but the
+runbook-facing contract remains typed capabilities and resources.
+
 The deterministic analyzer consumes evidence envelopes and emits typed proposal
 data: hypothesis, evidence references, proposed actions, confidence, and
 approval requirements. Prompt-injection-like log text remains untrusted
