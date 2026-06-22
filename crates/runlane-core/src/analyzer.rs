@@ -35,6 +35,7 @@ pub struct ProposedAction {
 pub enum ProposedActionKind {
     ServiceRestart,
     ServiceReload,
+    RemoveAllowlistedFile,
     CollectMoreLogs,
     ManualTakeover,
 }
@@ -46,6 +47,7 @@ impl ProposedActionKind {
         match self {
             Self::ServiceRestart => Some(ActionKind::ServiceRestart),
             Self::ServiceReload => Some(ActionKind::ServiceReload),
+            Self::RemoveAllowlistedFile => Some(ActionKind::RemoveAllowlistedFile),
             Self::CollectMoreLogs | Self::ManualTakeover => None,
         }
     }
@@ -73,6 +75,18 @@ impl ProposalPolicy {
                 ProposedActionKind::ServiceRestart,
                 ProposedActionKind::ServiceReload,
             ],
+        }
+    }
+
+    /// v0.1 disk-pressure policy.
+    #[must_use]
+    pub fn disk_pressure() -> Self {
+        Self {
+            allowed_actions: vec![
+                ProposedActionKind::RemoveAllowlistedFile,
+                ProposedActionKind::ManualTakeover,
+            ],
+            approval_required: vec![ProposedActionKind::RemoveAllowlistedFile],
         }
     }
 }
@@ -189,6 +203,86 @@ pub fn analyze_service_unhealthy(
     }
 }
 
+/// Deterministic analyzer for the disk-pressure runbook.
+#[must_use]
+pub fn analyze_disk_pressure(
+    proposal_id: impl Into<String>,
+    node_id: &str,
+    mount: &str,
+    cleanup_resource_id: &str,
+    evidence: &[EvidenceEnvelope],
+    allowed_cleanup_resources: &[String],
+) -> StructuredProposal {
+    let evidence_references = evidence
+        .iter()
+        .map(|evidence| evidence.source.clone())
+        .collect::<Vec<_>>();
+    let normalized = evidence
+        .iter()
+        .map(|evidence| evidence.body.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let excerpt = evidence
+        .iter()
+        .filter(|evidence| evidence.source.contains("logs"))
+        .map(|evidence| evidence.body.clone())
+        .collect::<Vec<_>>();
+    let cleanup_allowed = allowed_cleanup_resources
+        .iter()
+        .any(|resource| resource == cleanup_resource_id);
+    let pressure_detected = normalized.contains("disk_pressure=high")
+        || normalized.contains("usage=92")
+        || normalized.contains("free_space=low");
+    let candidate_present = normalized.contains("cleanup_candidate=present");
+
+    let (hypothesis, confidence_percent, proposed_actions) = if pressure_detected
+        && candidate_present
+        && cleanup_allowed
+    {
+        (
+            format!(
+                "{node_id} has disk pressure on {mount}; cleanup is limited to the declared allowlist path"
+            ),
+            84,
+            vec![ProposedAction {
+                id: "remove-allowlisted-cleanup-path".to_owned(),
+                kind: ProposedActionKind::RemoveAllowlistedFile,
+                target_resource_id: cleanup_resource_id.to_owned(),
+                requires_approval: true,
+                lease_request: Some(ResourceLeaseRequest::new(
+                    cleanup_resource_id,
+                    crate::LeaseMode::Exclusive,
+                    "disk-pressure analyzer proposed allowlisted cleanup",
+                )),
+            }],
+        )
+    } else {
+        (
+            format!("{node_id} disk pressure evidence does not match an allowlisted cleanup path"),
+            50,
+            vec![ProposedAction {
+                id: "manual-takeover".to_owned(),
+                kind: ProposedActionKind::ManualTakeover,
+                target_resource_id: format!("system:node/{node_id}/filesystem/{mount}"),
+                requires_approval: false,
+                lease_request: None,
+            }],
+        )
+    };
+
+    StructuredProposal {
+        id: proposal_id.into(),
+        hypothesis,
+        evidence_references,
+        approval_required: proposed_actions
+            .iter()
+            .any(|action| action.requires_approval),
+        proposed_actions,
+        confidence_percent,
+        untrusted_evidence_excerpt: excerpt,
+    }
+}
+
 /// Validates proposal actions against policy before approval.
 pub fn validate_proposal(
     proposal: &StructuredProposal,
@@ -220,7 +314,7 @@ mod tests {
 
     use super::{
         ProposalPolicy, ProposalValidationError, ProposedAction, ProposedActionKind,
-        StructuredProposal, analyze_service_unhealthy, validate_proposal,
+        StructuredProposal, analyze_disk_pressure, analyze_service_unhealthy, validate_proposal,
     };
 
     #[test]
@@ -241,6 +335,53 @@ mod tests {
         assert!(!proposal.contains_shell_command_field());
         validate_proposal(&proposal, &ProposalPolicy::service_unhealthy())
             .expect("healthy proposal is policy-valid");
+    }
+
+    #[test]
+    fn disk_pressure_proposes_only_allowlisted_cleanup_path() {
+        let cleanup_resource = "system:node/prod-web-01/path/var-tmp-runlane-demo-cache";
+        let proposal = analyze_disk_pressure(
+            "proposal-disk",
+            "prod-web-01",
+            "/",
+            cleanup_resource,
+            &[
+                EvidenceEnvelope::text("disk_snapshot", "disk_pressure=high usage=92"),
+                EvidenceEnvelope::text(
+                    "cleanup_candidate",
+                    "cleanup_candidate=present path=/var/tmp/runlane-demo-cache",
+                ),
+            ],
+            &[cleanup_resource.to_owned()],
+        );
+
+        validate_proposal(&proposal, &ProposalPolicy::disk_pressure())
+            .expect("allowlisted cleanup proposal is policy-valid");
+        assert_eq!(
+            proposal.proposed_actions[0].kind,
+            ProposedActionKind::RemoveAllowlistedFile
+        );
+        assert_eq!(
+            proposal.proposed_actions[0].target_resource_id,
+            cleanup_resource
+        );
+        assert!(!proposal.contains_shell_command_field());
+
+        let denied = analyze_disk_pressure(
+            "proposal-disk-denied",
+            "prod-web-01",
+            "/",
+            "system:node/prod-web-01/path/unapproved",
+            &[EvidenceEnvelope::text(
+                "disk_snapshot",
+                "disk_pressure=high cleanup_candidate=present",
+            )],
+            &[cleanup_resource.to_owned()],
+        );
+        assert_eq!(
+            denied.proposed_actions[0].kind,
+            ProposedActionKind::ManualTakeover
+        );
     }
 
     #[test]

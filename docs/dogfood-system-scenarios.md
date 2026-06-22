@@ -94,11 +94,26 @@ Verification:
 
 Goal: identify disk pressure and propose safe cleanup.
 
+This is the second executable system-layer dogfood target. The demo runbook is
+`examples/fleet/runbooks/disk-pressure.yaml`.
+
 Resources:
 
 - `filesystem:<mount>`;
 - allowlisted cleanup paths;
 - logs.
+
+The analyzer may only propose `file.remove_from_allowlist` for a cleanup path
+declared in the local helper allowlist. The helper action is typed data; it is
+not `rm`, a shell command, or free-form cleanup text.
+
+The CI-safe demo runs the disk-pressure journey end to end from the fleet
+fixture and emits the ledger-derived receipt:
+
+```bash
+cargo run -p runlane -- demo disk-pressure examples/fleet
+cargo run -p runlane -- receipt show run-demo-disk-pressure examples/fleet
+```
 
 Verification:
 

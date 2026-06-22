@@ -91,10 +91,15 @@ fn execute(args: &[String]) -> Result<(), String> {
             );
             Ok(())
         }
-        ActionKind::ServiceReload
-        | ActionKind::RunAllowlistedScript
-        | ActionKind::RemoveAllowlistedFile => {
-            Err("only service.restart dry-run is implemented in v0.1 helper".to_owned())
+        ActionKind::ServiceReload | ActionKind::RemoveAllowlistedFile => {
+            println!(
+                "status: succeeded\naction: {:?}\ntarget: {}\ndry_run: true\nmessage: validated typed helper action without mutating host",
+                accepted.action, accepted.target.resource_id
+            );
+            Ok(())
+        }
+        ActionKind::RunAllowlistedScript => {
+            Err("script.run_allowlisted dry-run is not implemented in v0.1 helper".to_owned())
         }
     }
 }
@@ -430,6 +435,7 @@ fn parse_action(value: &str) -> Result<ActionKind, String> {
     match value {
         "service.restart" => Ok(ActionKind::ServiceRestart),
         "service.reload" => Ok(ActionKind::ServiceReload),
+        "file.remove_from_allowlist" => Ok(ActionKind::RemoveAllowlistedFile),
         _ => Err(format!("unsupported helper action: {value}")),
     }
 }
@@ -485,6 +491,13 @@ mod tests {
         args.extend(fixture.args_without_command(100));
         args.retain(|arg| arg != "--dry-run");
         run(args).expect("dry-run smoke validates typed request");
+        fixture.remove();
+    }
+
+    #[test]
+    fn dry_run_accepts_typed_allowlisted_file_remove() {
+        let fixture = HelperFixture::write_file_remove("helper-file-remove-ok");
+        run(fixture.args(100)).expect("allowlisted file removal dry-run validates");
         fixture.remove();
     }
 
@@ -702,6 +715,55 @@ entries:
                 "sshd",
             );
             fixture
+        }
+
+        fn write_file_remove(prefix: &str) -> Self {
+            let root = unique_temp_dir(prefix);
+            fs::create_dir_all(&root).expect("fixture dir created");
+            fs::write(
+                root.join("lease.yaml"),
+                r#"
+claims:
+  lease_id: lease-1
+  run_id: run-1
+  approval_id: approval-1
+  node_id: prod-web-01
+  action: file.remove_from_allowlist
+  target_resource_id: system:node/prod-web-01/path/var-tmp-runlane-demo-cache
+  target_subject: /var/tmp/runlane-demo-cache
+  allowlist_entry_id: allow-runlane-demo-cache-cleanup
+  expires_at_unix_seconds: 200
+  nonce: nonce-1
+key_id: test-key
+signature: test-signature
+signature_status: valid
+seen_nonces: []
+"#,
+            )
+            .expect("lease written");
+            fs::write(
+                root.join("request.yaml"),
+                r#"
+lease_id: lease-1
+action: file.remove_from_allowlist
+target_resource_id: system:node/prod-web-01/path/var-tmp-runlane-demo-cache
+target_subject: /var/tmp/runlane-demo-cache
+arguments:
+  path: /var/tmp/runlane-demo-cache
+"#,
+            )
+            .expect("request written");
+            fs::write(
+                root.join("allowlist.yaml"),
+                r#"
+entries:
+  - id: allow-runlane-demo-cache-cleanup
+    action: file.remove_from_allowlist
+    target_resource_id: system:node/prod-web-01/path/var-tmp-runlane-demo-cache
+"#,
+            )
+            .expect("allowlist written");
+            Self { root }
         }
 
         fn write_request(

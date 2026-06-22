@@ -170,6 +170,19 @@ pub fn generate_operator_receipt(
     skipped_checks.sort_by(|left, right| left.check_id.cmp(&right.check_id));
     skipped_checks.dedup_by(|left, right| left.check_id == right.check_id);
 
+    let residual_risk = match helper_action {
+        ActionKind::RemoveAllowlistedFile => {
+            "disk pressure may recur until the growth source is fixed; cleanup was limited to the allowlist"
+        }
+        _ => "root cause still requires operator review if service fails again",
+    };
+    let takeover_notes = match helper_action {
+        ActionKind::RemoveAllowlistedFile => {
+            "operator can inspect disk evidence, cleanup allowlist, and verification before broader cleanup"
+        }
+        _ => "operator can inspect collected evidence and rerun verification",
+    };
+
     Ok(OperatorReceipt {
         run_id: run_id.to_owned(),
         incident_id,
@@ -186,9 +199,8 @@ pub fn generate_operator_receipt(
         verification_checks,
         verification_completed,
         skipped_checks,
-        residual_risk: "root cause still requires operator review if service fails again"
-            .to_owned(),
-        takeover_notes: "operator can inspect collected evidence and rerun verification".to_owned(),
+        residual_risk: residual_risk.to_owned(),
+        takeover_notes: takeover_notes.to_owned(),
     })
 }
 

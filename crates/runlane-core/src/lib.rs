@@ -832,6 +832,61 @@ pub struct ServiceUnhealthyRunbookPlan {
     pub run: Run,
 }
 
+/// Planning request for the v0.1 disk-pressure dogfood runbook.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskPressureRunbookRequest {
+    pub run_id: String,
+    pub node_id: String,
+    pub mount: String,
+    pub cleanup_resource_id: String,
+    pub cleanup_subject: String,
+}
+
+impl DiskPressureRunbookRequest {
+    /// Creates a disk-pressure planning request.
+    #[must_use]
+    pub fn new(
+        run_id: impl Into<String>,
+        node_id: impl Into<String>,
+        mount: impl Into<String>,
+        cleanup_resource_id: impl Into<String>,
+        cleanup_subject: impl Into<String>,
+    ) -> Self {
+        Self {
+            run_id: run_id.into(),
+            node_id: node_id.into(),
+            mount: mount.into(),
+            cleanup_resource_id: cleanup_resource_id.into(),
+            cleanup_subject: cleanup_subject.into(),
+        }
+    }
+}
+
+/// Fully planned disk-pressure runbook execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskPressureRunbookPlan {
+    pub storage_capability: Capability,
+    pub log_capability: Capability,
+    pub privilege_capability: Capability,
+    pub run: Run,
+}
+
+/// Fail-closed disk-pressure planning error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiskPressurePlanError {
+    NodeMismatch {
+        requested_node_id: String,
+        report_node_id: String,
+    },
+    UnsupportedOperatingSystem {
+        os: OperatingSystem,
+    },
+    MissingRequiredCapability {
+        capability: Capability,
+        reason: String,
+    },
+}
+
 /// Fail-closed service-unhealthy planning error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceUnhealthyPlanError {
@@ -987,6 +1042,130 @@ pub fn plan_service_unhealthy_runbook(
     })
 }
 
+/// Plans the disk-pressure dogfood runbook without executing cleanup.
+///
+/// Cleanup is modeled as a typed `file.remove_from_allowlist` action against a
+/// declared cleanup resource, never as raw `rm` or shell text.
+pub fn plan_disk_pressure_runbook(
+    request: &DiskPressureRunbookRequest,
+    report: &CapabilityReport,
+) -> Result<DiskPressureRunbookPlan, DiskPressurePlanError> {
+    if request.node_id != report.node_id {
+        return Err(DiskPressurePlanError::NodeMismatch {
+            requested_node_id: request.node_id.clone(),
+            report_node_id: report.node_id.clone(),
+        });
+    }
+
+    let storage_capability = require_disk_pressure_capability(
+        report,
+        "storage.df",
+        "filesystem snapshot capability is required for disk-pressure",
+    )?;
+    let log_capability = require_disk_pressure_capability(
+        report,
+        disk_pressure_log_capability_for_os(report.os)?,
+        "recent log capability is required for disk-pressure context",
+    )?;
+    let privilege_capability = require_disk_pressure_capability(
+        report,
+        disk_pressure_privilege_capability_for_os(report.os)?,
+        "signed helper capability is required for allowlisted cleanup",
+    )?;
+
+    let filesystem_resource = format!(
+        "system:node/{}/filesystem/{}",
+        request.node_id,
+        mount_resource_fragment(&request.mount)
+    );
+    let logs_resource = format!("system:node/{}/logs/disk-pressure", request.node_id);
+    let package_db_resource = format!("system:node/{}/package-db", request.node_id);
+    let firewall_resource = format!("system:node/{}/firewall", request.node_id);
+    let unrelated_path_resource = format!("system:node/{}/path/etc", request.node_id);
+
+    let impact = ImpactSet::writes(
+        OperationalLayer::System,
+        [request.cleanup_resource_id.clone()],
+    )
+    .with_may_affect([filesystem_resource.clone()])
+    .with_does_not_affect([
+        package_db_resource,
+        firewall_resource,
+        unrelated_path_resource,
+    ]);
+
+    let mut verification = VerificationPlanner::new(VerificationPolicy::minimal())
+        .plan(&ActionKind::RemoveAllowlistedFile, &impact);
+    verification.skipped.extend([
+        SkippedVerification::new(
+            "package_audit",
+            "disk-pressure cleanup removes only an allowlisted path, not package-db",
+        ),
+        SkippedVerification::new(
+            "firewall_audit",
+            "disk-pressure cleanup does not mutate firewall rules",
+        ),
+    ]);
+
+    let collect_disk = Task::new("collect-disk-usage", OperationalLayer::System)
+        .with_capabilities([storage_capability.clone()])
+        .with_reads([filesystem_resource.clone()]);
+    let collect_candidate = Task::new("collect-cleanup-candidate", OperationalLayer::System)
+        .with_capabilities([storage_capability.clone()])
+        .with_reads([request.cleanup_resource_id.clone()]);
+    let collect_logs = Task::new("collect-disk-pressure-logs", OperationalLayer::System)
+        .with_capabilities([log_capability.clone()])
+        .with_reads([logs_resource]);
+    let collect_snapshot = Task::new("collect-pre-action-snapshot", OperationalLayer::System)
+        .with_capabilities([storage_capability.clone()])
+        .with_reads([
+            filesystem_resource.clone(),
+            request.cleanup_resource_id.clone(),
+        ]);
+    let cleanup = Task::new("cleanup-allowlisted-path", OperationalLayer::System)
+        .with_capabilities([privilege_capability.clone()])
+        .with_reads([request.cleanup_resource_id.clone()])
+        .with_writes([request.cleanup_resource_id.clone()])
+        .with_lease_requests([ResourceLeaseRequest::new(
+            request.cleanup_resource_id.clone(),
+            LeaseMode::Exclusive,
+            "disk-pressure cleanup requires serialized path mutation",
+        )])
+        .with_dependencies([
+            "collect-disk-usage".to_owned(),
+            "collect-cleanup-candidate".to_owned(),
+            "collect-disk-pressure-logs".to_owned(),
+            "collect-pre-action-snapshot".to_owned(),
+        ])
+        .with_impact(impact.clone())
+        .with_verification(verification.clone());
+
+    let run = Run::new(
+        request.run_id.clone(),
+        format!(
+            "Resolve disk pressure on {} {} by cleaning {}",
+            request.node_id, request.mount, request.cleanup_subject
+        ),
+        OperationalLayer::System,
+    )
+    .with_tasks([
+        collect_disk,
+        collect_candidate,
+        collect_logs,
+        collect_snapshot,
+        cleanup,
+    ])
+    .with_impact(impact)
+    .with_verification(verification);
+
+    Ok(DiskPressureRunbookPlan {
+        storage_capability,
+        log_capability,
+        privilege_capability,
+        run,
+    })
+}
+
 fn service_manager_driver_for_os(
     os: OperatingSystem,
 ) -> Result<ServiceManagerDriver, ServiceUnhealthyPlanError> {
@@ -1068,6 +1247,54 @@ fn service_resource_id(node_id: &str, service: &str) -> String {
     format!("system:node/{node_id}/service/{service}")
 }
 
+fn disk_pressure_log_capability_for_os(
+    os: OperatingSystem,
+) -> Result<&'static str, DiskPressurePlanError> {
+    match os {
+        OperatingSystem::Linux => Ok("logs.journald"),
+        OperatingSystem::FreeBsd | OperatingSystem::OpenBsd => Ok("logs.syslog-file"),
+        OperatingSystem::Solaris | OperatingSystem::Illumos | OperatingSystem::Unknown => {
+            Err(DiskPressurePlanError::UnsupportedOperatingSystem { os })
+        }
+    }
+}
+
+fn disk_pressure_privilege_capability_for_os(
+    os: OperatingSystem,
+) -> Result<&'static str, DiskPressurePlanError> {
+    match os {
+        OperatingSystem::Linux | OperatingSystem::FreeBsd => Ok("privilege.sudo-helper"),
+        OperatingSystem::OpenBsd => Ok("privilege.doas-helper"),
+        OperatingSystem::Solaris | OperatingSystem::Illumos | OperatingSystem::Unknown => {
+            Err(DiskPressurePlanError::UnsupportedOperatingSystem { os })
+        }
+    }
+}
+
+fn require_disk_pressure_capability(
+    report: &CapabilityReport,
+    capability_id: &str,
+    reason: impl Into<String>,
+) -> Result<Capability, DiskPressurePlanError> {
+    let capability = Capability::new(capability_id);
+    if report.supports(&capability) {
+        Ok(capability)
+    } else {
+        Err(DiskPressurePlanError::MissingRequiredCapability {
+            capability,
+            reason: reason.into(),
+        })
+    }
+}
+
+fn mount_resource_fragment(mount: &str) -> String {
+    if mount == "/" {
+        "root".to_owned()
+    } else {
+        mount.trim_matches('/').replace('/', "-")
+    }
+}
+
 /// Fail-closed capability error shape shared by platform backends and runbook planning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityFailure {
@@ -1132,6 +1359,9 @@ impl VerificationPlanner {
                 OperationalLayer::Application,
                 ActionKind::ServiceRestart | ActionKind::ServiceReload,
             ) => self.plan_application_service_change(action, impact),
+            (OperationalLayer::System, ActionKind::RemoveAllowlistedFile) => {
+                self.plan_system_allowlisted_file_cleanup(impact)
+            }
             (OperationalLayer::Platform, ActionKind::ServiceReload) => {
                 self.plan_platform_reload(impact)
             }
@@ -1242,6 +1472,37 @@ impl VerificationPlanner {
                 "full_disk_scan",
                 "package mutation classified changed files without broad filesystem writes",
             )],
+        }
+    }
+
+    fn plan_system_allowlisted_file_cleanup(&self, impact: &ImpactSet) -> VerificationPlan {
+        let cleanup_resource = primary_resource(impact);
+        let filesystem_resource = dependent_resource(impact);
+        VerificationPlan {
+            required: vec![
+                VerificationCheck::new(
+                    "helper_result_matches_request",
+                    cleanup_resource.clone(),
+                    VerificationTier::DirectImpact,
+                ),
+                VerificationCheck::new(
+                    "free_space_improved",
+                    filesystem_resource,
+                    VerificationTier::DirectImpact,
+                ),
+                VerificationCheck::new(
+                    "cleaned_paths_match_allowlist",
+                    cleanup_resource.clone(),
+                    VerificationTier::DirectImpact,
+                ),
+                VerificationCheck::new(
+                    "no_unrelated_deletion_reported",
+                    cleanup_resource,
+                    VerificationTier::DirectImpact,
+                ),
+            ],
+            conditional: Vec::new(),
+            skipped: Vec::new(),
         }
     }
 
@@ -2288,8 +2549,8 @@ mod tests {
         ServiceManagerDriver, ServiceUnhealthyPlanError, ServiceUnhealthyRunbookRequest,
         SkippedVerification, SpoolReason, Task, UnsupportedCapability, VerificationCheck,
         VerificationPlan, VerificationPlanner, VerificationPolicy, VerificationTier,
-        is_valid_run_transition, plan_service_unhealthy_runbook, resolve_fleet_overlays,
-        validate_agent_task_envelope, validate_helper_request,
+        is_valid_run_transition, plan_disk_pressure_runbook, plan_service_unhealthy_runbook,
+        resolve_fleet_overlays, validate_agent_task_envelope, validate_helper_request,
     };
 
     #[test]
@@ -2708,6 +2969,129 @@ mod tests {
                 report_node_id: "linux-01".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn disk_pressure_plans_allowlisted_cleanup_with_scoped_verification() {
+        let report = capability_report(
+            "prod-web-01",
+            OperatingSystem::Linux,
+            [
+                "os.linux",
+                "logs.journald",
+                "storage.df",
+                "privilege.sudo-helper",
+            ],
+        );
+        let cleanup_resource = "system:node/prod-web-01/path/var-tmp-runlane-demo-cache";
+        let plan = plan_disk_pressure_runbook(
+            &super::DiskPressureRunbookRequest::new(
+                "run-disk",
+                "prod-web-01",
+                "/",
+                cleanup_resource,
+                "/var/tmp/runlane-demo-cache",
+            ),
+            &report,
+        )
+        .expect("disk-pressure should plan on Linux");
+        let cleanup = plan
+            .run
+            .tasks
+            .iter()
+            .find(|task| task.id == "cleanup-allowlisted-path")
+            .expect("cleanup task should exist");
+
+        assert_eq!(plan.run.tasks.len(), 5);
+        assert_eq!(cleanup.writes, [cleanup_resource.to_owned()]);
+        assert_eq!(cleanup.lease_requests.len(), 1);
+        assert_eq!(cleanup.lease_requests[0].mode, LeaseMode::Exclusive);
+        assert_eq!(cleanup.lease_requests[0].resource_id, cleanup_resource);
+        assert!(cleanup.verification.required.iter().any(|check| {
+            check.id == "free_space_improved" && check.tier == VerificationTier::DirectImpact
+        }));
+        assert!(
+            cleanup
+                .verification
+                .required
+                .iter()
+                .any(|check| check.id == "cleaned_paths_match_allowlist")
+        );
+        assert!(
+            cleanup
+                .verification
+                .required
+                .iter()
+                .any(|check| check.id == "no_unrelated_deletion_reported")
+        );
+        assert!(
+            cleanup
+                .impact
+                .does_not_affect
+                .contains(&"system:node/prod-web-01/path/etc".to_owned())
+        );
+        assert!(cleanup.verification.skipped_checks_have_reasons());
+        assert_eq!(plan.run.impact, cleanup.impact);
+        assert_eq!(plan.run.verification, cleanup.verification);
+    }
+
+    #[test]
+    fn disk_pressure_planning_fails_closed_for_missing_capability_or_node() {
+        let mut report = capability_report(
+            "prod-web-01",
+            OperatingSystem::Linux,
+            [
+                "os.linux",
+                "logs.journald",
+                "storage.df",
+                "privilege.sudo-helper",
+            ],
+        );
+        report
+            .capabilities
+            .retain(|capability| capability.as_str() != "storage.df");
+        let cleanup_resource = "system:node/prod-web-01/path/var-tmp-runlane-demo-cache";
+        let missing = plan_disk_pressure_runbook(
+            &super::DiskPressureRunbookRequest::new(
+                "run-disk",
+                "prod-web-01",
+                "/",
+                cleanup_resource,
+                "/var/tmp/runlane-demo-cache",
+            ),
+            &report,
+        )
+        .expect_err("missing storage.df should fail closed");
+        assert!(matches!(
+            missing,
+            super::DiskPressurePlanError::MissingRequiredCapability { capability, .. }
+                if capability == Capability::new("storage.df")
+        ));
+
+        let node_mismatch = plan_disk_pressure_runbook(
+            &super::DiskPressureRunbookRequest::new(
+                "run-disk",
+                "other-node",
+                "/",
+                cleanup_resource,
+                "/var/tmp/runlane-demo-cache",
+            ),
+            &capability_report(
+                "prod-web-01",
+                OperatingSystem::Linux,
+                [
+                    "os.linux",
+                    "logs.journald",
+                    "storage.df",
+                    "privilege.sudo-helper",
+                ],
+            ),
+        )
+        .expect_err("node mismatch should fail closed");
+        assert!(matches!(
+            node_mismatch,
+            super::DiskPressurePlanError::NodeMismatch { .. }
+        ));
     }
 
     #[test]

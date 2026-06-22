@@ -1,0 +1,99 @@
+name: disk-pressure
+version: 0.1.0
+summary: Diagnose system disk pressure and propose an allowlisted cleanup action after approval.
+layer: system
+
+select:
+  labels:
+    runlane.io/layer-primary: system
+
+parameters:
+  node:
+    type: string
+    required: true
+  mount:
+    type: string
+    required: true
+  cleanup_path:
+    type: string
+    required: true
+
+resources:
+  reads:
+    - system:node/{{ node }}/filesystem/{{ mount }}
+    - system:node/{{ node }}/path/{{ cleanup_path }}
+    - system:node/{{ node }}/logs/disk-pressure
+  writes:
+    - system:node/{{ node }}/path/{{ cleanup_path }}
+  conflicts:
+    - system:node/{{ node }}/package-db
+    - system:node/{{ node }}/reboot
+
+collect:
+  - id: disk_usage
+    capability: storage.df
+    with:
+      mount: "{{ mount }}"
+
+  - id: cleanup_candidate
+    capability: storage.df
+    with:
+      path: "{{ cleanup_path }}"
+
+  - id: recent_disk_logs
+    capability_any:
+      - logs.journald
+      - logs.syslog-file
+    with:
+      since: 30m
+      max_lines: 300
+
+  - id: pre_action_snapshot
+    capability: storage.df
+    with:
+      mount: "{{ mount }}"
+      path: "{{ cleanup_path }}"
+
+analyze:
+  mode: structured_proposal
+  allowed_actions:
+    - file.remove_from_allowlist
+    - collect.more_logs
+
+policy:
+  require_approval:
+    - file.remove_from_allowlist
+
+recover:
+  - id: cleanup_allowlisted_path
+    layer: system
+    action: file.remove_from_allowlist
+    with:
+      path: "{{ cleanup_path }}"
+    lease:
+      resource: system:node/{{ node }}/path/{{ cleanup_path }}
+      mode: exclusive
+    approval: required
+    impact:
+      writes:
+        - system:node/{{ node }}/path/{{ cleanup_path }}
+      may_affect:
+        - system:node/{{ node }}/filesystem/{{ mount }}
+      does_not_affect:
+        - system:node/{{ node }}/package-db
+        - system:node/{{ node }}/firewall
+        - system:node/{{ node }}/path/etc
+    verify:
+      strategy: layer_impact_scoped
+      required:
+        - check: free_space_improved
+          resource: system:node/{{ node }}/filesystem/{{ mount }}
+        - check: cleaned_paths_match_allowlist
+          resource: system:node/{{ node }}/path/{{ cleanup_path }}
+        - check: no_unrelated_deletion_reported
+          resource: system:node/{{ node }}/path/{{ cleanup_path }}
+      skipped_with_reason:
+        - check: package_audit
+          reason: allowlisted cleanup did not mutate package database
+        - check: firewall_audit
+          reason: allowlisted cleanup did not mutate firewall rules

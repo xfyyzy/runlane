@@ -6,7 +6,9 @@ use crate::{
     HelperActionRequest, HelperActionResponse, HelperActionStatus, HelperAllowlist,
     HelperAllowlistEntry, HelperArgument, HelperValidationContext, LeaseMode, LeaseSignatureStatus,
     SignedCapabilityLease, VerificationPlanner, VerificationPolicy,
-    analyzer::{ProposalPolicy, analyze_service_unhealthy, validate_proposal},
+    analyzer::{
+        ProposalPolicy, analyze_disk_pressure, analyze_service_unhealthy, validate_proposal,
+    },
     approval::{ApprovalRecord, ApprovalStore},
     fleet::FleetRepository,
     receipt::{OperatorReceipt, generate_operator_receipt},
@@ -33,6 +35,15 @@ pub enum JourneyStage {
 /// Deterministic E2E simulation result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceUnhealthySimulation {
+    pub run_id: String,
+    pub stages: Vec<JourneyStage>,
+    pub receipt: OperatorReceipt,
+    pub ledger: AuditLedger,
+}
+
+/// Deterministic disk-pressure E2E simulation result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskPressureSimulation {
     pub run_id: String,
     pub stages: Vec<JourneyStage>,
     pub receipt: OperatorReceipt,
@@ -382,6 +393,333 @@ pub fn run_service_unhealthy_simulation(
     })
 }
 
+/// Runs the deterministic disk-pressure journey against a fleet fixture.
+pub fn run_disk_pressure_simulation(
+    fleet_path: impl AsRef<Path>,
+) -> Result<DiskPressureSimulation, E2eError> {
+    let run_id = "run-demo-disk-pressure";
+    let incident_id = "incident-demo-disk-pressure";
+    let cleanup_resource_id = "system:node/prod-web-01/path/var-tmp-runlane-demo-cache";
+    let cleanup_subject = "/var/tmp/runlane-demo-cache";
+    let fleet =
+        FleetRepository::load(fleet_path).map_err(|error| E2eError::Fleet(error.to_string()))?;
+    let mut ledger = AuditLedger::empty();
+    append(
+        &mut ledger,
+        run_id,
+        AuditEventKind::IncidentCreated {
+            incident_id: incident_id.to_owned(),
+            node_id: "prod-web-01".to_owned(),
+            runbook: "disk-pressure".to_owned(),
+        },
+    )?;
+
+    let mut control_plane = ControlPlane::empty();
+    for node in &fleet.inventory {
+        control_plane
+            .create_enrollment_token(EnrollmentToken::new(
+                format!("token-disk-{}", node.id),
+                format!("enroll-disk-{}", node.id),
+                node.id.clone(),
+                node.os,
+                "demo-trust-root",
+                200,
+                format!("enroll-disk-nonce-{}", node.id),
+            ))
+            .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
+        control_plane
+            .enroll_agent(&AgentEnrollmentRequest::new(
+                format!("enroll-disk-{}", node.id),
+                node.id.clone(),
+                node.os,
+                format!("cert-disk-{}", node.id),
+                "demo-trust-root",
+                100,
+            ))
+            .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
+    }
+
+    let target = fleet
+        .inventory
+        .iter()
+        .find(|node| node.id == "prod-web-01")
+        .ok_or_else(|| E2eError::Fleet("examples/fleet missing prod-web-01".to_owned()))?;
+    let report = CapabilityReport::new(
+        target.id.clone(),
+        target.os,
+        target
+            .requested_capabilities
+            .iter()
+            .cloned()
+            .map(Capability::new),
+        [],
+    );
+    let plan = crate::plan_disk_pressure_runbook(
+        &crate::DiskPressureRunbookRequest::new(
+            run_id,
+            &target.id,
+            "/",
+            cleanup_resource_id,
+            cleanup_subject,
+        ),
+        &report,
+    )
+    .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
+
+    let identity = control_plane
+        .agents()
+        .iter()
+        .find(|agent| agent.node_id == target.id)
+        .ok_or_else(|| E2eError::Planning("target agent was not enrolled".to_owned()))?
+        .identity();
+    for (index, task) in plan
+        .run
+        .tasks
+        .iter()
+        .filter(|task| task.id.starts_with("collect-"))
+        .enumerate()
+    {
+        let capability = task
+            .required_capabilities
+            .first()
+            .cloned()
+            .ok_or_else(|| E2eError::Planning(format!("{} missing capability", task.id)))?;
+        let resource_id = task
+            .reads
+            .first()
+            .cloned()
+            .ok_or_else(|| E2eError::Planning(format!("{} missing read resource", task.id)))?;
+        control_plane.enqueue_task(PendingAgentTask::new(
+            AgentTaskEnvelope::new(
+                format!("env-demo-{}", task.id),
+                run_id,
+                &task.id,
+                &target.id,
+                100,
+                200,
+                format!("nonce-demo-{}", task.id),
+                task.required_capabilities.clone(),
+                format!("audit-demo-{}", task.id),
+            ),
+            TypedTaskPayload::CollectEvidence {
+                capability,
+                resource_id,
+            },
+        ));
+        let pulled = control_plane
+            .pull_task(&identity, 101 + index as u64)
+            .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
+        let evidence = disk_pressure_evidence_for_collect_task(&pulled.envelope.task_id)?;
+        control_plane
+            .submit_result(
+                &identity,
+                AgentResultSubmission::new(
+                    &pulled.envelope.envelope_id,
+                    &pulled.envelope.run_id,
+                    &pulled.envelope.task_id,
+                    &pulled.envelope.node_id,
+                    &pulled.envelope.nonce,
+                    AgentResultStatus::Succeeded,
+                    [evidence],
+                    &pulled.envelope.audit_correlation_id,
+                ),
+                110 + index as u64,
+            )
+            .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
+    }
+    let evidence: Vec<EvidenceEnvelope> = control_plane
+        .accepted_results
+        .iter()
+        .filter(|result| result.run_id == run_id && result.status == AgentResultStatus::Succeeded)
+        .flat_map(|result| result.evidence.clone())
+        .collect();
+    if evidence.len() != 4 {
+        return Err(E2eError::Planning(format!(
+            "expected 4 evidence results, got {}",
+            evidence.len()
+        )));
+    }
+    append_runtime_events(&mut ledger, run_id, control_plane.ledger.events())?;
+    for evidence in &evidence {
+        append(
+            &mut ledger,
+            run_id,
+            AuditEventKind::EvidenceCollected {
+                source: evidence.source.clone(),
+            },
+        )?;
+    }
+
+    let allowed_cleanup_resources = fleet
+        .allowlists
+        .iter()
+        .filter(|entry| entry.action == "file.remove_from_allowlist")
+        .map(|entry| entry.target_resource_id.clone())
+        .collect::<Vec<_>>();
+    let proposal = analyze_disk_pressure(
+        "proposal-demo-disk-pressure",
+        &target.id,
+        "/",
+        cleanup_resource_id,
+        &evidence,
+        &allowed_cleanup_resources,
+    );
+    validate_proposal(&proposal, &ProposalPolicy::disk_pressure())
+        .map_err(|error| E2eError::Proposal(format!("{error:?}")))?;
+    append(
+        &mut ledger,
+        run_id,
+        AuditEventKind::ProposalGenerated {
+            proposal_id: proposal.id.clone(),
+            hypothesis: proposal.hypothesis.clone(),
+        },
+    )?;
+
+    let cleanup_task = plan
+        .run
+        .tasks
+        .iter()
+        .find(|task| task.id == "cleanup-allowlisted-path")
+        .ok_or_else(|| E2eError::Planning("cleanup task missing".to_owned()))?;
+    let mut approvals = ApprovalStore::empty();
+    approvals
+        .request(ApprovalRecord::new(
+            "approval-demo-disk-pressure",
+            run_id,
+            &proposal,
+            "remove-allowlisted-cleanup-path",
+            crate::OperationalLayer::System,
+            cleanup_subject,
+            cleanup_task.impact.clone(),
+            cleanup_task.verification.clone(),
+            120,
+            200,
+        ))
+        .map_err(|error| E2eError::Approval(format!("{error:?}")))?;
+    let claims = approvals
+        .approve(
+            "approval-demo-disk-pressure",
+            "remove-allowlisted-cleanup-path",
+            "operator",
+            150,
+            "allow-prod-web-runlane-demo-cache-cleanup",
+            "lease-nonce-demo-disk-pressure",
+        )
+        .map_err(|error| E2eError::Approval(format!("{error:?}")))?;
+    append_runtime_events(&mut ledger, run_id, approvals.ledger.events())?;
+    append(
+        &mut ledger,
+        run_id,
+        AuditEventKind::CapabilityLeaseIssued {
+            lease_id: claims.lease_id.clone(),
+            approval_id: claims.approval_id.clone(),
+        },
+    )?;
+    append(
+        &mut ledger,
+        run_id,
+        AuditEventKind::ResourceLeaseGranted {
+            lease_id: claims.lease_id.clone(),
+            resource_id: claims.target.resource_id.clone(),
+            mode: LeaseMode::Exclusive,
+        },
+    )?;
+
+    let signed = SignedCapabilityLease::new(claims.clone(), "demo-key", "demo-signature");
+    let request = HelperActionRequest::new(
+        &claims.lease_id,
+        ActionKind::RemoveAllowlistedFile,
+        ActionTarget::new(&claims.target.resource_id, cleanup_subject),
+        [HelperArgument::new("path", cleanup_subject)],
+    );
+    let allowlist = HelperAllowlist::new([HelperAllowlistEntry::new(
+        "allow-prod-web-runlane-demo-cache-cleanup",
+        ActionKind::RemoveAllowlistedFile,
+        &claims.target.resource_id,
+    )]);
+    validate_helper_request(
+        &request,
+        &signed,
+        &HelperValidationContext::new(
+            "prod-web-01",
+            150,
+            LeaseSignatureStatus::Valid,
+            [],
+            allowlist,
+        ),
+    )
+    .map_err(|error| E2eError::Helper(format!("{error:?}")))?;
+    let helper_response = HelperActionResponse::new(
+        HelperActionStatus::Succeeded,
+        "dry-run file.remove_from_allowlist validated",
+    );
+    append(
+        &mut ledger,
+        run_id,
+        AuditEventKind::ActionResult {
+            action: ActionKind::RemoveAllowlistedFile,
+            target: ActionTarget::new(&claims.target.resource_id, cleanup_subject),
+            status: helper_response.status,
+        },
+    )?;
+
+    let verification = VerificationPlanner::new(VerificationPolicy::minimal())
+        .plan(&ActionKind::RemoveAllowlistedFile, &cleanup_task.impact)
+        .with_skipped(cleanup_task.verification.skipped.clone());
+    append(
+        &mut ledger,
+        run_id,
+        AuditEventKind::VerificationSelected {
+            plan: verification.clone(),
+        },
+    )?;
+    for check in &verification.required {
+        append(
+            &mut ledger,
+            run_id,
+            AuditEventKind::VerificationCompleted {
+                check_id: check.id.clone(),
+                resource_id: check.resource_id.clone(),
+            },
+        )?;
+    }
+    for skipped in &verification.skipped {
+        append(
+            &mut ledger,
+            run_id,
+            AuditEventKind::VerificationSkipped {
+                skipped: skipped.clone(),
+            },
+        )?;
+    }
+
+    let receipt = generate_operator_receipt(run_id, &ledger)
+        .map_err(|error| E2eError::Receipt(format!("{error:?}")))?;
+    append(
+        &mut ledger,
+        run_id,
+        AuditEventKind::CognitiveReceiptGenerated {
+            receipt_id: "receipt-demo-disk-pressure".to_owned(),
+        },
+    )?;
+
+    Ok(DiskPressureSimulation {
+        run_id: run_id.to_owned(),
+        stages: vec![
+            JourneyStage::Declare,
+            JourneyStage::Observe,
+            JourneyStage::Propose,
+            JourneyStage::Approve,
+            JourneyStage::Lease,
+            JourneyStage::Execute,
+            JourneyStage::Verify,
+            JourneyStage::Remember,
+        ],
+        receipt,
+        ledger,
+    })
+}
+
 fn append(ledger: &mut AuditLedger, run_id: &str, kind: AuditEventKind) -> Result<(), E2eError> {
     let sequence = ledger.next_sequence();
     ledger
@@ -421,9 +759,33 @@ fn evidence_for_collect_task(task_id: &str) -> Result<EvidenceEnvelope, E2eError
     Ok(runtime_text_evidence(source, body))
 }
 
+fn disk_pressure_evidence_for_collect_task(task_id: &str) -> Result<EvidenceEnvelope, E2eError> {
+    let (source, body) = match task_id {
+        "collect-disk-usage" => ("disk_usage", "disk_pressure=high mount=/ usage=92"),
+        "collect-cleanup-candidate" => (
+            "cleanup_candidate",
+            "cleanup_candidate=present path=/var/tmp/runlane-demo-cache bytes=524288000",
+        ),
+        "collect-disk-pressure-logs" => (
+            "disk_pressure_logs",
+            "log=present disk pressure detected; no deletion command supplied",
+        ),
+        "collect-pre-action-snapshot" => (
+            "pre_action_snapshot",
+            "pre_action_snapshot=present free_space=low cleanup_candidate=present",
+        ),
+        other => {
+            return Err(E2eError::Planning(format!(
+                "unsupported disk-pressure evidence task: {other}"
+            )));
+        }
+    };
+    Ok(runtime_text_evidence(source, body))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{JourneyStage, run_service_unhealthy_simulation};
+    use super::{JourneyStage, run_disk_pressure_simulation, run_service_unhealthy_simulation};
 
     #[test]
     fn runs_full_service_unhealthy_simulation_from_example_fleet() {
@@ -450,5 +812,33 @@ mod tests {
         assert!(rendered.contains("service_status"));
         assert!(rendered.contains("package_audit"));
         assert!(rendered.contains("takeover"));
+    }
+
+    #[test]
+    fn runs_full_disk_pressure_simulation_from_example_fleet() {
+        let simulation = run_disk_pressure_simulation(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/fleet"
+        ))
+        .expect("disk-pressure e2e succeeds");
+        assert_eq!(
+            simulation.stages,
+            [
+                JourneyStage::Declare,
+                JourneyStage::Observe,
+                JourneyStage::Propose,
+                JourneyStage::Approve,
+                JourneyStage::Lease,
+                JourneyStage::Execute,
+                JourneyStage::Verify,
+                JourneyStage::Remember,
+            ]
+        );
+        let rendered = simulation.receipt.render_text();
+        assert!(rendered.contains("incident-demo-disk-pressure"));
+        assert!(rendered.contains("cleanup_candidate"));
+        assert!(rendered.contains("free_space_improved"));
+        assert!(rendered.contains("cleaned_paths_match_allowlist"));
+        assert!(rendered.contains("no_unrelated_deletion_reported"));
     }
 }
