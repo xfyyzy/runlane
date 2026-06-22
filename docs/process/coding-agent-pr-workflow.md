@@ -174,7 +174,7 @@ Where `branch-protection.json` contains:
   "block_creations": false,
   "required_conversation_resolution": true,
   "lock_branch": false,
-  "allow_fork_syncing": true
+  "allow_fork_syncing": false
 }
 ```
 
