@@ -130,10 +130,56 @@ git branch --delete issue-<number>-<short-slug>
 
 Delete the remote branch if GitHub did not do so automatically.
 
-## Temporary Gap
+## Main Branch Protection
 
-This document is introduced before branch protection and the PR policy workflow
-are active. During that transition, coding agents must follow the PR workflow
-as closely as the current repository settings permit and document any gap in
-the PR. After the PR policy and branch protection are enabled, this workflow is
-enforced by repository settings in addition to process rules.
+`main` is protected so semantic changes flow through the PR workflow.
+
+The intended GitHub branch protection policy is:
+
+- pull requests are required before merge;
+- required checks are `rust` and `pr-policy`;
+- force pushes are disabled;
+- branch deletion is disabled;
+- conversation resolution is required when supported by GitHub;
+- approving reviews are not required for the current single-maintainer stage.
+
+The protection is configured with this API shape:
+
+```bash
+gh api \
+  --method PUT \
+  repos/xfyyzy/runlane/branches/main/protection \
+  --input branch-protection.json
+```
+
+Where `branch-protection.json` contains:
+
+```json
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": ["rust", "pr-policy"]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0,
+    "require_last_push_approval": false
+  },
+  "restrictions": null,
+  "required_linear_history": false,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "block_creations": false,
+  "required_conversation_resolution": true,
+  "lock_branch": false,
+  "allow_fork_syncing": false
+}
+```
+
+## Transition Note
+
+This workflow was introduced before branch protection and the PR policy
+workflow were active. The current repository path is the protected PR workflow
+described above.
