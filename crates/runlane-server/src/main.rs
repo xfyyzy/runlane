@@ -1,3 +1,5 @@
+mod http;
+
 use std::{env, process};
 
 use runlane_core::{
@@ -56,6 +58,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("{}", receipt.render_text());
             Ok(())
         }
+        [http_cmd, demo_serve, addr] if http_cmd == "http" && demo_serve == "demo-serve" => {
+            serve_http_demo(addr)
+        }
         _ => Err(format!(
             "unsupported runlane-server command: {}",
             args.join(" ")
@@ -63,7 +68,54 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
 }
 
+fn serve_http_demo(addr: &str) -> Result<(), String> {
+    let state = http::HttpState::new(http_demo_control_plane());
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    runtime.block_on(async move {
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(|error| error.to_string())?;
+        println!("runlane-server http demo listening on {addr}");
+        axum::serve(listener, http::router(state))
+            .await
+            .map_err(|error| error.to_string())
+    })
+}
+
 fn demo_control_plane() {
+    let mut server = http_demo_control_plane();
+    let agent = server.agents()[0].clone();
+    let pulled = server
+        .pull_task(&agent.identity(), 101)
+        .expect("demo pull succeeds");
+    server
+        .submit_result(
+            &agent.identity(),
+            AgentResultSubmission::new(
+                &pulled.envelope.envelope_id,
+                &pulled.envelope.run_id,
+                &pulled.envelope.task_id,
+                &pulled.envelope.node_id,
+                &pulled.envelope.nonce,
+                AgentResultStatus::Succeeded,
+                [runtime_text_evidence("service_status", "sshd active")],
+                &pulled.envelope.audit_correlation_id,
+            ),
+            102,
+        )
+        .expect("demo result accepted");
+    println!(
+        "runlane-server demo-control-plane; enrolled_agents={}; accepted_results={}; audit_events={}",
+        server.agents().len(),
+        server.accepted_results.len(),
+        server.ledger.events().len()
+    );
+}
+
+fn http_demo_control_plane() -> ControlPlane {
     let mut server = ControlPlane::empty();
     server
         .create_enrollment_token(EnrollmentToken::new(
@@ -76,7 +128,7 @@ fn demo_control_plane() {
             "enroll-nonce",
         ))
         .expect("demo token is valid");
-    let agent = server
+    server
         .enroll_agent(&AgentEnrollmentRequest::new(
             "demo-token",
             "prod-web-01",
@@ -103,29 +155,22 @@ fn demo_control_plane() {
             resource_id: "system:node/prod-web-01/service/sshd".to_owned(),
         },
     ));
-    let pulled = server
-        .pull_task(&agent.identity(), 101)
-        .expect("demo pull succeeds");
+    server.enqueue_task(PendingAgentTask::new(
+        AgentTaskEnvelope::new(
+            "env-2",
+            "run-1",
+            "collect-service-status-2",
+            "prod-web-01",
+            100,
+            200,
+            "nonce-2",
+            [Capability::new("service.systemd")],
+            "audit-2",
+        ),
+        TypedTaskPayload::CollectEvidence {
+            capability: Capability::new("service.systemd"),
+            resource_id: "system:node/prod-web-01/service/sshd".to_owned(),
+        },
+    ));
     server
-        .submit_result(
-            &agent.identity(),
-            AgentResultSubmission::new(
-                &pulled.envelope.envelope_id,
-                &pulled.envelope.run_id,
-                &pulled.envelope.task_id,
-                &pulled.envelope.node_id,
-                &pulled.envelope.nonce,
-                AgentResultStatus::Succeeded,
-                [runtime_text_evidence("service_status", "sshd active")],
-                &pulled.envelope.audit_correlation_id,
-            ),
-            102,
-        )
-        .expect("demo result accepted");
-    println!(
-        "runlane-server demo-control-plane; enrolled_agents={}; accepted_results={}; audit_events={}",
-        server.agents().len(),
-        server.accepted_results.len(),
-        server.ledger.events().len()
-    );
 }

@@ -8,7 +8,14 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+axum = { workspace = true }
 runlane-core = { path = "../runlane-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }
 
 [lints]
 workspace = true
