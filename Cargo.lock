@@ -60,6 +60,8 @@ name = "runlane-agent"
 version = "0.1.0"
 dependencies = [
  "runlane-core",
+ "serde",
+ "serde_yaml",
 ]
 
 [[package]]

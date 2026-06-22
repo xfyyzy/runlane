@@ -156,14 +156,15 @@ Read in this order before implementing:
 7. [`docs/platform-model.md`](docs/platform-model.md)
 8. [`docs/helper-contract.md`](docs/helper-contract.md)
 9. [`docs/agent-protocol.md`](docs/agent-protocol.md)
-10. [`docs/server-state.md`](docs/server-state.md)
-11. [`docs/fleet-repo-schema.md`](docs/fleet-repo-schema.md)
-12. [`docs/coding-agent-brief.md`](docs/coding-agent-brief.md)
-13. [`docs/dogfood-system-scenarios.md`](docs/dogfood-system-scenarios.md)
-14. [`docs/user-journey-v0.1.md`](docs/user-journey-v0.1.md)
-15. [`docs/milestones/v0.1.md`](docs/milestones/v0.1.md)
-16. [`docs/verification-matrix.md`](docs/verification-matrix.md)
-17. [`docs/adr/0001-cross-platform-native-agent.md`](docs/adr/0001-cross-platform-native-agent.md)
+10. [`docs/agent-local-state.md`](docs/agent-local-state.md)
+11. [`docs/server-state.md`](docs/server-state.md)
+12. [`docs/fleet-repo-schema.md`](docs/fleet-repo-schema.md)
+13. [`docs/coding-agent-brief.md`](docs/coding-agent-brief.md)
+14. [`docs/dogfood-system-scenarios.md`](docs/dogfood-system-scenarios.md)
+15. [`docs/user-journey-v0.1.md`](docs/user-journey-v0.1.md)
+16. [`docs/milestones/v0.1.md`](docs/milestones/v0.1.md)
+17. [`docs/verification-matrix.md`](docs/verification-matrix.md)
+18. [`docs/adr/0001-cross-platform-native-agent.md`](docs/adr/0001-cross-platform-native-agent.md)
 
 ## Development
 
@@ -209,6 +210,43 @@ Exercise the current in-process agent/server boundary:
 cargo run -p runlane-server -- demo-control-plane
 cargo run -p runlane-agent -- demo-enroll-pull
 ```
+
+Exercise the current local agent config and durable identity preflight:
+
+```bash
+root="$(mktemp -d)"
+mkdir -p "$root/etc" "$root/lib" "$root/spool"
+printf 'trust-root\n' > "$root/etc/trust-root.pem"
+printf 'client-cert\n' > "$root/lib/client.crt"
+printf 'client-key\n' > "$root/lib/client.key"
+chmod 0644 "$root/etc/trust-root.pem" "$root/lib/client.crt"
+chmod 0600 "$root/lib/client.key"
+chmod 0700 "$root/spool"
+
+cargo run -p runlane-agent -- config init \
+  --config "$root/etc/agent.yaml" \
+  --node-id prod-web-01 \
+  --server-url https://runlane.example \
+  --trust-root-path "$root/etc/trust-root.pem" \
+  --identity-path "$root/lib/identity.yaml" \
+  --certificate-path "$root/lib/client.crt" \
+  --private-key-path "$root/lib/client.key" \
+  --spool-dir "$root/spool" \
+  --platform-family linux
+
+cargo run -p runlane-agent -- identity install \
+  --config "$root/etc/agent.yaml" \
+  --certificate-fingerprint sha256:demo \
+  --enrolled-at 1780000000
+
+cargo run -p runlane-agent -- config validate \
+  --config "$root/etc/agent.yaml"
+cargo run -p runlane-agent -- run \
+  --config "$root/etc/agent.yaml"
+```
+
+See [`docs/agent-local-state.md`](docs/agent-local-state.md) for the schema,
+permission checks, and the current local identity persistence boundary.
 
 Inspect the deterministic approval boundary:
 

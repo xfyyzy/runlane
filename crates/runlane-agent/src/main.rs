@@ -1,7 +1,13 @@
+mod config;
 mod platform;
 
-use std::env;
+use std::{env, error::Error, fmt, path::PathBuf};
 
+use config::{
+    AgentConfig, AgentConfigError, InitConfigOptions, InstallIdentityOptions,
+    format_operating_system, init_config, install_identity, parse_operating_system, show_config,
+    validate_agent_state,
+};
 use platform::{EvidenceKind, NativeBackend, PlatformBackend};
 use runlane_core::{
     AgentTaskEnvelope, Capability,
@@ -11,11 +17,31 @@ use runlane_core::{
 };
 
 fn main() {
-    if env::args().nth(1).as_deref() == Some("demo-enroll-pull") {
-        demo_enroll_pull();
-        return;
+    if let Err(error) = run_cli(env::args().skip(1).collect()) {
+        eprintln!("runlane-agent: {error}");
+        std::process::exit(1);
     }
+}
 
+fn run_cli(args: Vec<String>) -> Result<(), CliError> {
+    let Some(command) = args.first().map(String::as_str) else {
+        print_platform_probe();
+        return Ok(());
+    };
+
+    match command {
+        "demo-enroll-pull" if args.len() == 1 => {
+            demo_enroll_pull();
+            Ok(())
+        }
+        "config" => run_config_command(&args[1..]),
+        "identity" => run_identity_command(&args[1..]),
+        "run" => run_agent(&args[1..]),
+        _ => Err(CliError::usage()),
+    }
+}
+
+fn print_platform_probe() {
     let backend = NativeBackend::current();
     let report = backend.capability_report("local-node");
     let fixture_stub_count = backend.parser_fixture_stubs().len();
@@ -40,6 +66,134 @@ fn main() {
         capability_probe_ok,
         service_fixture_probe_ok
     );
+}
+
+fn run_config_command(args: &[String]) -> Result<(), CliError> {
+    let Some(command) = args.first().map(String::as_str) else {
+        return Err(CliError::usage());
+    };
+    match command {
+        "init" => {
+            let mut flags = FlagParser::new(&args[1..]);
+            let config_path = flags.required_path("--config")?;
+            let node_id = flags.required("--node-id")?;
+            let server_url = flags.required("--server-url")?;
+            let server_trust_root_path = flags.required_path("--trust-root-path")?;
+            let identity_path = flags.required_path("--identity-path")?;
+            let certificate_path = flags.required_path("--certificate-path")?;
+            let private_key_path = flags.required_path("--private-key-path")?;
+            let spool_dir = flags.required_path("--spool-dir")?;
+            let platform_family = flags
+                .optional("--platform-family")?
+                .map_or_else(current_supported_platform, |value| {
+                    parse_operating_system(&value).map_err(CliError::from)
+                })?;
+            let force = flags.present("--force");
+            flags.finish()?;
+
+            let config = AgentConfig::new(
+                node_id,
+                server_url,
+                server_trust_root_path,
+                identity_path,
+                certificate_path,
+                private_key_path,
+                spool_dir,
+                platform_family,
+            );
+            init_config(&InitConfigOptions {
+                config_path: config_path.clone(),
+                config,
+                force,
+            })?;
+            println!(
+                "runlane-agent config init ok; config={}",
+                config_path.display()
+            );
+            Ok(())
+        }
+        "show" => {
+            let mut flags = FlagParser::new(&args[1..]);
+            let config_path = flags.required_path("--config")?;
+            flags.finish()?;
+            print!("{}", show_config(&config_path)?);
+            Ok(())
+        }
+        "validate" => {
+            let mut flags = FlagParser::new(&args[1..]);
+            let config_path = flags.required_path("--config")?;
+            flags.finish()?;
+            let state = validate_agent_state(&config_path, NativeBackend::current().os())?;
+            println!(
+                "runlane-agent config validate ok; node={}; platform={}; identity=present; spool={}",
+                state.config.node_id,
+                format_operating_system(state.config.platform_family),
+                state.config.spool_dir.display()
+            );
+            Ok(())
+        }
+        _ => Err(CliError::usage()),
+    }
+}
+
+fn run_identity_command(args: &[String]) -> Result<(), CliError> {
+    let Some(command) = args.first().map(String::as_str) else {
+        return Err(CliError::usage());
+    };
+    match command {
+        "install" => {
+            let mut flags = FlagParser::new(&args[1..]);
+            let config_path = flags.required_path("--config")?;
+            let certificate_fingerprint = flags.required("--certificate-fingerprint")?;
+            let enrolled_at_unix_seconds = flags.required_u64("--enrolled-at")?;
+            let expires_at_unix_seconds = flags.optional_u64("--expires-at")?;
+            let force = flags.present("--force");
+            flags.finish()?;
+            let identity = install_identity(&InstallIdentityOptions {
+                config_path,
+                certificate_fingerprint,
+                enrolled_at_unix_seconds,
+                expires_at_unix_seconds,
+                force,
+            })?;
+            println!(
+                "runlane-agent identity install ok; node={}; platform={}; certificate_fingerprint={}",
+                identity.node_id,
+                format_operating_system(identity.platform_family),
+                identity.certificate_fingerprint
+            );
+            Ok(())
+        }
+        _ => Err(CliError::usage()),
+    }
+}
+
+fn run_agent(args: &[String]) -> Result<(), CliError> {
+    let mut flags = FlagParser::new(args);
+    let config_path = flags.required_path("--config")?;
+    flags.finish()?;
+    let state = validate_agent_state(&config_path, NativeBackend::current().os())?;
+    println!(
+        "runlane-agent run; node={}; server_url={}; platform={}; identity_fingerprint={}; spool={}",
+        state.config.node_id,
+        state.config.server_url,
+        format_operating_system(state.config.platform_family),
+        state.identity.certificate_fingerprint,
+        state.config.spool_dir.display()
+    );
+    Ok(())
+}
+
+fn current_supported_platform() -> Result<runlane_core::OperatingSystem, CliError> {
+    let os = NativeBackend::current().os();
+    if matches!(os, runlane_core::OperatingSystem::Unknown) {
+        return Err(CliError::Config(AgentConfigError::InvalidField {
+            field: "platform_family",
+            reason: "detected platform is unsupported; pass a first-class v0.1 platform explicitly"
+                .to_owned(),
+        }));
+    }
+    Ok(os)
 }
 
 fn demo_enroll_pull() {
@@ -109,5 +263,115 @@ fn service_status_fixture(os: runlane_core::OperatingSystem) -> &'static str {
             include_str!("../fixtures/openbsd/rcctl-check.txt")
         }
         _ => "",
+    }
+}
+
+#[derive(Debug)]
+enum CliError {
+    Config(AgentConfigError),
+    Usage,
+}
+
+impl CliError {
+    const fn usage() -> Self {
+        Self::Usage
+    }
+}
+
+impl From<AgentConfigError> for CliError {
+    fn from(value: AgentConfigError) -> Self {
+        Self::Config(value)
+    }
+}
+
+impl fmt::Display for CliError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Config(error) => write!(f, "{error}"),
+            Self::Usage => write!(
+                f,
+                "usage: runlane-agent [demo-enroll-pull | config init|show|validate | identity install | run]"
+            ),
+        }
+    }
+}
+
+impl Error for CliError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Config(error) => Some(error),
+            Self::Usage => None,
+        }
+    }
+}
+
+struct FlagParser {
+    args: Vec<String>,
+}
+
+impl FlagParser {
+    fn new(args: &[String]) -> Self {
+        Self {
+            args: args.to_vec(),
+        }
+    }
+
+    fn required(&mut self, flag: &'static str) -> Result<String, CliError> {
+        self.optional(flag)?.ok_or(CliError::Usage)
+    }
+
+    fn required_path(&mut self, flag: &'static str) -> Result<PathBuf, CliError> {
+        self.required(flag).map(PathBuf::from)
+    }
+
+    fn required_u64(&mut self, flag: &'static str) -> Result<u64, CliError> {
+        let value = self.required(flag)?;
+        value.parse::<u64>().map_err(|_| {
+            CliError::Config(AgentConfigError::InvalidField {
+                field: flag,
+                reason: format!("expected unsigned integer, got {value:?}"),
+            })
+        })
+    }
+
+    fn optional(&mut self, flag: &'static str) -> Result<Option<String>, CliError> {
+        let Some(index) = self.args.iter().position(|arg| arg == flag) else {
+            return Ok(None);
+        };
+        self.args.remove(index);
+        if index >= self.args.len() || self.args[index].starts_with("--") {
+            return Err(CliError::Usage);
+        }
+        Ok(Some(self.args.remove(index)))
+    }
+
+    fn optional_u64(&mut self, flag: &'static str) -> Result<Option<u64>, CliError> {
+        self.optional(flag)?
+            .map(|value| {
+                value.parse::<u64>().map_err(|_| {
+                    CliError::Config(AgentConfigError::InvalidField {
+                        field: flag,
+                        reason: format!("expected unsigned integer, got {value:?}"),
+                    })
+                })
+            })
+            .transpose()
+    }
+
+    fn present(&mut self, flag: &'static str) -> bool {
+        if let Some(index) = self.args.iter().position(|arg| arg == flag) {
+            self.args.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn finish(self) -> Result<(), CliError> {
+        if self.args.is_empty() {
+            Ok(())
+        } else {
+            Err(CliError::Usage)
+        }
     }
 }

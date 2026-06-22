@@ -22,6 +22,28 @@ The enrolled identity binds:
 The server rejects task pulls and result submissions when the mTLS identity does
 not match the node id in the request.
 
+## Local Config And Identity State
+
+The agent loads local configuration before startup. The config declares:
+
+- node id;
+- server URL;
+- server trust root path;
+- local identity metadata path;
+- certificate and private key paths;
+- spool directory;
+- platform family.
+
+After enrollment, the agent persists local identity metadata that binds the node
+id, platform family, certificate fingerprint, trust root path, certificate path,
+private key path, and certificate lifecycle timestamps.
+
+The current executable boundary is documented in
+[`agent-local-state.md`](agent-local-state.md). Local identity installation is a
+CLI-safe persistence path for development and tests until real enrollment
+transport writes the same state. It does not replace server-side enrollment,
+mTLS identity extraction, or certificate lifecycle management.
+
 ## Pull Endpoint Shape
 
 The agent polls the server:
@@ -140,3 +162,16 @@ These commands exercise enrollment token validation, agent enrollment, typed
 task pull, structured result submission, and audit events without requiring
 inbound node ports. The task payload is typed data; there is no shell command
 field.
+
+The current local agent startup preflight is:
+
+```bash
+cargo run -p runlane-agent -- config init ...
+cargo run -p runlane-agent -- identity install ...
+cargo run -p runlane-agent -- config validate --config <agent.yaml>
+cargo run -p runlane-agent -- run --config <agent.yaml>
+```
+
+Startup fails closed for missing config, missing identity metadata, mismatched
+identity, unsafe permissions, platform mismatch, or missing trust/certificate
+files.

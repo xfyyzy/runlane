@@ -50,7 +50,7 @@ Node-side worker.
 
 Owns:
 
-- config loading;
+- config loading and local identity preflight;
 - enrollment;
 - mTLS client;
 - pull loop;
