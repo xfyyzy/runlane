@@ -68,6 +68,28 @@ Every PR must include:
 Generic statements such as "tests passed" are not enough unless they name the
 commands or link to the CI run that executed them.
 
+## PR Policy Check
+
+The pull request body policy is enforced by `.github/workflows/pr-policy.yml`
+using `scripts/ci/check-pr-policy.sh`. The check reads the PR body from the
+GitHub pull request event payload and does not call GitHub APIs.
+
+Reproduce it locally with the sample bodies:
+
+```bash
+scripts/ci/check-pr-policy.sh docs/process/pr-policy-fixtures/passing.md
+if scripts/ci/check-pr-policy.sh docs/process/pr-policy-fixtures/failing-unchecked.md; then
+  echo "unexpected pass"
+  exit 1
+else
+  echo "expected failure"
+fi
+```
+
+The policy fails when the PR body lacks a closing issue reference, omits the
+required sections, has no self-review checklist, or leaves the self-review
+checklist entirely unchecked.
+
 ## Verification Rules
 
 For Rust changes, run at least:
