@@ -272,6 +272,22 @@ cargo run -p runlane -- approval show approval-demo-1
 cargo run -p runlane -- approval approve approval-demo-1
 ```
 
+Exercise the Telegram approval adapter without committing or printing Telegram
+secrets:
+
+```bash
+scripts/smoke/telegram-approval-live-simulated.sh
+```
+
+This is a live-simulated approval-channel smoke. It feeds Telegram-shaped
+operator commands through the same approval API used by the CLI, covers
+list/show/approve/reject, and verifies unknown identity fail-closed audit
+evidence. It does not call the Telegram API and does not read a bot token. If a
+future live Telegram wrapper is used, inject bot tokens and chat/user ids via
+environment variables or local secret files only, redact them from logs and PRs,
+and state clearly whether the result was live Telegram, live-simulated, or
+blocked.
+
 Run the full CI-safe service-unhealthy simulation and render its receipt:
 
 ```bash

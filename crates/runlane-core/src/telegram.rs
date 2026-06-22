@@ -224,7 +224,13 @@ impl TelegramApprovalAdapter {
         command: TelegramApprovalCommand,
         context: &TelegramApprovalContext,
     ) -> Result<TelegramApprovalResponse, TelegramApprovalError> {
-        let actor = self.identity_map.actor_for(identity)?.to_owned();
+        let actor = match self.identity_map.actor_for(identity) {
+            Ok(actor) => actor.to_owned(),
+            Err(error) => {
+                store.record_adapter_rejection("telegram", "unauthorized_identity")?;
+                return Err(error);
+            }
+        };
         match command {
             TelegramApprovalCommand::List => Ok(TelegramApprovalResponse::PendingApprovals(
                 store
@@ -430,6 +436,11 @@ mod tests {
             store.show("approval-demo-1").unwrap().state,
             ApprovalState::Pending
         );
+        assert!(store.ledger.events().iter().any(|event| matches!(
+            &event.kind,
+            AuditEventKind::ApprovalAdapterRejected { adapter, reason }
+                if adapter == "telegram" && reason == "unauthorized_identity"
+        )));
 
         assert_eq!(
             TelegramApprovalCommand::parse("/schedule reboot prod-web-01")

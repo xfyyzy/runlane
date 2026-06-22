@@ -222,6 +222,18 @@ impl ApprovalStore {
         })
     }
 
+    /// Records an approval adapter rejection before it can mutate approval state.
+    pub fn record_adapter_rejection(
+        &mut self,
+        adapter: &str,
+        reason: &str,
+    ) -> Result<(), ApprovalError> {
+        self.append_event(AuditEventKind::ApprovalAdapterRejected {
+            adapter: adapter.to_owned(),
+            reason: reason.to_owned(),
+        })
+    }
+
     fn index_of(&self, id: &str) -> Result<usize, ApprovalError> {
         self.records
             .iter()

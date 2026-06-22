@@ -1976,6 +1976,10 @@ pub enum AuditEventKind {
         approval_id: String,
         superseded_by: String,
     },
+    ApprovalAdapterRejected {
+        adapter: String,
+        reason: String,
+    },
     ActionResult {
         action: ActionKind,
         target: ActionTarget,
