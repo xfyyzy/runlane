@@ -373,6 +373,20 @@ cargo run -p runlane -- demo service-unhealthy examples/fleet
 cargo run -p runlane -- receipt show run-demo-service-unhealthy examples/fleet
 ```
 
+The controlled Linux real-host dogfood path uses the same receipt shape after
+collecting native host evidence from a fixed failing demo service:
+
+```bash
+scripts/smoke/linux-service-unhealthy-dogfood.sh
+```
+
+That smoke persists runtime truth to a temporary local state directory and then
+renders it with:
+
+```bash
+cargo run -p runlane -- receipt show run-real-host-service-unhealthy <state-dir>
+```
+
 ## Minimal v0.1 CLI And API Surface
 
 ### CLI

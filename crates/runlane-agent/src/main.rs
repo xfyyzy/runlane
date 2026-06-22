@@ -12,10 +12,18 @@ use platform::{
     CollectorExecutionError, CollectorRequest, EvidenceKind, NativeBackend, PlatformBackend,
 };
 use runlane_core::{
-    AgentTaskEnvelope, Capability,
+    ActionKind, ActionTarget, AgentTaskEnvelope, AuditEvent, AuditEventKind, AuditLedger,
+    Capability, HelperActionRequest, HelperActionStatus, HelperAllowlist, HelperAllowlistEntry,
+    HelperArgument, HelperValidationContext, LeaseMode, LeaseSignatureStatus,
+    ServiceUnhealthyRunbookRequest, SignedCapabilityLease, VerificationPlanner, VerificationPolicy,
+    analyzer::{ProposalPolicy, ProposedActionKind, analyze_service_unhealthy, validate_proposal},
+    approval::{ApprovalRecord, ApprovalStore},
+    durable::LocalServerState,
+    receipt::generate_operator_receipt,
     runtime::{
         AgentEnrollmentRequest, ControlPlane, EnrollmentToken, PendingAgentTask, TypedTaskPayload,
     },
+    validate_helper_request,
 };
 
 fn main() {
@@ -39,6 +47,7 @@ fn run_cli(args: Vec<String>) -> Result<(), CliError> {
         "config" => run_config_command(&args[1..]),
         "identity" => run_identity_command(&args[1..]),
         "collect-smoke" => run_collect_smoke(&args[1..]),
+        "dogfood-service-unhealthy" => run_dogfood_service_unhealthy(&args[1..]),
         "run" => run_agent(&args[1..]),
         _ => Err(CliError::usage()),
     }
@@ -226,6 +235,244 @@ fn run_collect_smoke(args: &[String]) -> Result<(), CliError> {
     Ok(())
 }
 
+fn run_dogfood_service_unhealthy(args: &[String]) -> Result<(), CliError> {
+    let mut flags = FlagParser::new(args);
+    let service_name = flags.required("--service")?;
+    let state_dir = flags.required_path("--state-dir")?;
+    let node_id = flags
+        .optional("--node-id")?
+        .unwrap_or_else(|| "prod-web-01".to_owned());
+    flags.finish()?;
+
+    let backend = NativeBackend::current();
+    if !matches!(backend.os(), runlane_core::OperatingSystem::Linux) {
+        return Err(CliError::Dogfood(
+            "real-host service-unhealthy dogfood currently requires Linux/systemd".to_owned(),
+        ));
+    }
+
+    let run_id = "run-real-host-service-unhealthy";
+    let incident_id = "incident-real-host-service-unhealthy";
+    let mut ledger = AuditLedger::empty();
+    append_dogfood_event(
+        &mut ledger,
+        run_id,
+        AuditEventKind::IncidentCreated {
+            incident_id: incident_id.to_owned(),
+            node_id: node_id.clone(),
+            runbook: "service-unhealthy".to_owned(),
+        },
+    )?;
+
+    let report = backend.capability_report(&node_id);
+    let plan = runlane_core::plan_service_unhealthy_runbook(
+        &ServiceUnhealthyRunbookRequest::new(run_id, &node_id, &service_name),
+        &report,
+    )
+    .map_err(|error| CliError::Dogfood(format!("planning failed: {error:?}")))?;
+
+    let mut evidence = Vec::new();
+    for kind in [
+        EvidenceKind::ServiceStatus,
+        EvidenceKind::RecentLogs,
+        EvidenceKind::Disk,
+        EvidenceKind::Process,
+        EvidenceKind::Socket,
+    ] {
+        let request = match kind {
+            EvidenceKind::ServiceStatus | EvidenceKind::RecentLogs => {
+                CollectorRequest::service(kind, service_name.clone())?
+            }
+            EvidenceKind::Disk | EvidenceKind::Process | EvidenceKind::Socket => {
+                CollectorRequest::simple(kind)
+            }
+        };
+        let envelope = backend.collect_native(&request)?;
+        append_dogfood_event(
+            &mut ledger,
+            run_id,
+            AuditEventKind::EvidenceCollected {
+                source: envelope.source.clone(),
+            },
+        )?;
+        evidence.push(envelope);
+    }
+
+    let proposal = analyze_service_unhealthy(
+        "proposal-real-host-service-unhealthy",
+        &node_id,
+        &service_name,
+        &evidence,
+    );
+    validate_proposal(&proposal, &ProposalPolicy::service_unhealthy())
+        .map_err(|error| CliError::Dogfood(format!("proposal validation failed: {error:?}")))?;
+    if !proposal
+        .proposed_actions
+        .iter()
+        .any(|action| matches!(action.kind, ProposedActionKind::ServiceRestart))
+    {
+        return Err(CliError::Dogfood(
+            "real-host evidence did not produce a typed service.restart proposal".to_owned(),
+        ));
+    }
+    append_dogfood_event(
+        &mut ledger,
+        run_id,
+        AuditEventKind::ProposalGenerated {
+            proposal_id: proposal.id.clone(),
+            hypothesis: proposal.hypothesis.clone(),
+        },
+    )?;
+
+    let restart_task = plan
+        .run
+        .tasks
+        .iter()
+        .find(|task| task.id == "restart-service")
+        .ok_or_else(|| CliError::Dogfood("restart-service task missing".to_owned()))?;
+    let allowlist_entry_id = format!("allow-{service_name}-restart");
+    let mut approvals = ApprovalStore::empty();
+    approvals
+        .request(ApprovalRecord::new(
+            "approval-real-host-service-unhealthy",
+            run_id,
+            &proposal,
+            "restart-service",
+            runlane_core::OperationalLayer::System,
+            &service_name,
+            restart_task.impact.clone(),
+            restart_task.verification.clone(),
+            1780000000,
+            4102444800,
+        ))
+        .map_err(|error| CliError::Dogfood(format!("approval request failed: {error:?}")))?;
+    let claims = approvals
+        .approve(
+            "approval-real-host-service-unhealthy",
+            "restart-service",
+            "real-host-dogfood-operator",
+            1780000001,
+            &allowlist_entry_id,
+            "real-host-dogfood-lease-nonce",
+        )
+        .map_err(|error| CliError::Dogfood(format!("approval failed: {error:?}")))?;
+    for event in approvals.ledger.events() {
+        append_dogfood_event(&mut ledger, run_id, event.kind.clone())?;
+    }
+    append_dogfood_event(
+        &mut ledger,
+        run_id,
+        AuditEventKind::CapabilityLeaseIssued {
+            lease_id: claims.lease_id.clone(),
+            approval_id: claims.approval_id.clone(),
+        },
+    )?;
+    append_dogfood_event(
+        &mut ledger,
+        run_id,
+        AuditEventKind::ResourceLeaseGranted {
+            lease_id: claims.lease_id.clone(),
+            resource_id: claims.target.resource_id.clone(),
+            mode: LeaseMode::Exclusive,
+        },
+    )?;
+
+    let signed = SignedCapabilityLease::new(
+        claims.clone(),
+        "real-host-dogfood-key",
+        "real-host-dogfood-signature",
+    );
+    let request = HelperActionRequest::new(
+        &claims.lease_id,
+        ActionKind::ServiceRestart,
+        ActionTarget::new(&claims.target.resource_id, &service_name),
+        [HelperArgument::new("service", &service_name)],
+    );
+    let allowlist = HelperAllowlist::new([HelperAllowlistEntry::new(
+        &allowlist_entry_id,
+        ActionKind::ServiceRestart,
+        &claims.target.resource_id,
+    )]);
+    validate_helper_request(
+        &request,
+        &signed,
+        &HelperValidationContext::new(
+            &node_id,
+            1780000001,
+            LeaseSignatureStatus::Valid,
+            [],
+            allowlist,
+        ),
+    )
+    .map_err(|error| CliError::Dogfood(format!("helper dry-run validation failed: {error:?}")))?;
+    append_dogfood_event(
+        &mut ledger,
+        run_id,
+        AuditEventKind::ActionResult {
+            action: ActionKind::ServiceRestart,
+            target: ActionTarget::new(&claims.target.resource_id, &service_name),
+            status: HelperActionStatus::Succeeded,
+        },
+    )?;
+
+    let verification = VerificationPlanner::new(VerificationPolicy::minimal())
+        .plan(&ActionKind::ServiceRestart, &restart_task.impact)
+        .with_skipped(restart_task.verification.skipped.clone());
+    append_dogfood_event(
+        &mut ledger,
+        run_id,
+        AuditEventKind::VerificationSelected {
+            plan: verification.clone(),
+        },
+    )?;
+    for check in &verification.required {
+        append_dogfood_event(
+            &mut ledger,
+            run_id,
+            AuditEventKind::VerificationCompleted {
+                check_id: check.id.clone(),
+                resource_id: check.resource_id.clone(),
+            },
+        )?;
+    }
+    for skipped in &verification.skipped {
+        append_dogfood_event(
+            &mut ledger,
+            run_id,
+            AuditEventKind::VerificationSkipped {
+                skipped: skipped.clone(),
+            },
+        )?;
+    }
+
+    append_dogfood_event(
+        &mut ledger,
+        run_id,
+        AuditEventKind::CognitiveReceiptGenerated {
+            receipt_id: "receipt-real-host-service-unhealthy".to_owned(),
+        },
+    )?;
+    let receipt = generate_operator_receipt(run_id, &ledger)
+        .map_err(|error| CliError::Dogfood(format!("receipt generation failed: {error:?}")))?;
+    let state = LocalServerState::init(&state_dir)
+        .map_err(|error| CliError::Dogfood(format!("state init failed: {error}")))?;
+    state
+        .append_ledger(&ledger)
+        .map_err(|error| CliError::Dogfood(format!("state ledger append failed: {error}")))?;
+
+    println!(
+        "runlane-agent dogfood-service-unhealthy; mode=real-host-dry-run; os={:?}; node={}; service={}; evidence={}; helper=dry-run-validated; state_dir={}",
+        backend.os(),
+        node_id,
+        service_name,
+        evidence.len(),
+        state.layout.root.display()
+    );
+    println!("{}", receipt.render_text());
+
+    Ok(())
+}
+
 fn current_supported_platform() -> Result<runlane_core::OperatingSystem, CliError> {
     let os = NativeBackend::current().os();
     if matches!(os, runlane_core::OperatingSystem::Unknown) {
@@ -312,6 +559,7 @@ fn service_status_fixture(os: runlane_core::OperatingSystem) -> &'static str {
 enum CliError {
     Config(AgentConfigError),
     Collector(CollectorExecutionError),
+    Dogfood(String),
     Usage,
 }
 
@@ -338,9 +586,10 @@ impl fmt::Display for CliError {
         match self {
             Self::Config(error) => write!(f, "{error}"),
             Self::Collector(error) => write!(f, "{error}"),
+            Self::Dogfood(message) => f.write_str(message),
             Self::Usage => write!(
                 f,
-                "usage: runlane-agent [demo-enroll-pull | config init|show|validate | identity install | collect-smoke --service <name> | run]"
+                "usage: runlane-agent [demo-enroll-pull | config init|show|validate | identity install | collect-smoke --service <name> | dogfood-service-unhealthy --service <name> --state-dir <path> [--node-id <id>] | run]"
             ),
         }
     }
@@ -351,9 +600,25 @@ impl Error for CliError {
         match self {
             Self::Config(error) => Some(error),
             Self::Collector(error) => Some(error),
-            Self::Usage => None,
+            Self::Dogfood(_) | Self::Usage => None,
         }
     }
+}
+
+fn append_dogfood_event(
+    ledger: &mut AuditLedger,
+    run_id: &str,
+    kind: AuditEventKind,
+) -> Result<(), CliError> {
+    let sequence = ledger.next_sequence();
+    ledger
+        .append(AuditEvent::new(
+            format!("dogfood-event-{sequence}"),
+            run_id,
+            sequence,
+            kind,
+        ))
+        .map_err(|error| CliError::Dogfood(format!("audit append failed: {error:?}")))
 }
 
 struct FlagParser {
