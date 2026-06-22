@@ -294,6 +294,18 @@ Telegram/Discord/Feishu should be adapters, not the control plane.
 
 A chat approval should call the same approval API as the Web UI or CLI. This makes bot functionality portable across nodes and roles.
 
+The v0.1 Telegram approval adapter is intentionally narrow:
+
+- map a Telegram `chat_id` + `user_id` to a Runlane audit actor;
+- list and show pending approvals;
+- approve or reject by calling the same approval store methods used by CLI;
+- fail closed for unknown Telegram identities;
+- reject non-approval commands instead of interpreting chat text as operations.
+
+It must not schedule tasks, execute helper actions, parse runbooks, own policy
+logic, or carry node/runbook business behavior. Live Telegram credentials are
+outside CI; adapter tests use deterministic command and identity fixtures.
+
 ## Storage choice
 
 v0.1 can use SQLite for single-operator deployment:

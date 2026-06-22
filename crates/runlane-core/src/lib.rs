@@ -9,6 +9,7 @@ pub mod e2e;
 pub mod fleet;
 pub mod receipt;
 pub mod runtime;
+pub mod telegram;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
