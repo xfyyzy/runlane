@@ -286,3 +286,17 @@ server:
 cargo test -p runlane-server http -- --nocapture
 cargo run -p runlane-server -- http demo-serve 127.0.0.1:17890
 ```
+
+The reproducible live loopback smoke starts that server, drives it over TCP,
+validates JSON responses, validates a missing-identity fail-closed response,
+and tears the server down:
+
+```bash
+scripts/smoke/live-http-transport.sh
+```
+
+Expected terminal evidence ends with:
+
+```text
+live HTTP transport smoke ok; addr=127.0.0.1:17890
+```
