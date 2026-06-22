@@ -80,6 +80,9 @@ Minimum behavior:
 - initialize an append-only event ledger;
 - fail explicitly if required storage or key material is missing.
 
+The current local durable state boundary stores append-only audit events under
+`runlane-state/ledger/audit.yaml`. See [`server-state.md`](server-state.md).
+
 ### 2. Fleet Intent Initialization
 
 Operator intent:

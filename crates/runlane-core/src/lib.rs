@@ -4,15 +4,17 @@
 
 pub mod analyzer;
 pub mod approval;
+pub mod durable;
 pub mod e2e;
 pub mod fleet;
 pub mod receipt;
 pub mod runtime;
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Operational layer of a resource, task, runbook, or policy rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OperationalLayer {
     /// OS, kernel, system packages, users, privilege, firewall, filesystems, service manager.
     System,
@@ -23,7 +25,7 @@ pub enum OperationalLayer {
 }
 
 /// Operating systems supported as first-class agent targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OperatingSystem {
     Linux,
     FreeBsd,
@@ -244,7 +246,7 @@ impl Resource {
 }
 
 /// Lease mode requested or held for a resource.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LeaseMode {
     Observe,
     Intent,
@@ -383,7 +385,7 @@ impl ImpactSet {
 }
 
 /// Cost and breadth tier for a verification check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum VerificationTier {
     Precondition,
     DirectImpact,
@@ -392,7 +394,7 @@ pub enum VerificationTier {
 }
 
 /// A verification check selected for a run or task.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationCheck {
     pub id: String,
     pub resource_id: String,
@@ -416,7 +418,7 @@ impl VerificationCheck {
 }
 
 /// A verification check intentionally skipped with an audit-ready reason.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkippedVerification {
     pub check_id: String,
     pub reason: String,
@@ -434,7 +436,7 @@ impl SkippedVerification {
 }
 
 /// Verification plan selected from layer, impact, and policy.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationPlan {
     pub required: Vec<VerificationCheck>,
     pub conditional: Vec<VerificationCheck>,
@@ -479,7 +481,7 @@ impl VerificationPlan {
 }
 
 /// High-level lifecycle for an incident run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RunState {
     Created,
     Planned,
@@ -719,7 +721,7 @@ impl AgentResultSubmission {
 }
 
 /// Why an agent result was spooled locally.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpoolReason {
     ServerUnavailable,
     SubmissionRejected(String),
@@ -1074,7 +1076,7 @@ pub enum CapabilityFailure {
 }
 
 /// Typed action names keep model output away from raw shell execution.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ActionKind {
     ServiceRestart,
     ServiceReload,
@@ -1292,7 +1294,7 @@ fn dependent_resource(impact: &ImpactSet) -> String {
 }
 
 /// Target bound to a typed helper action.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ActionTarget {
     pub resource_id: String,
     pub subject: String,
@@ -1483,7 +1485,7 @@ impl HelperActionRequest {
 }
 
 /// Helper action result status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HelperActionStatus {
     Succeeded,
     Failed,
@@ -1509,14 +1511,14 @@ impl HelperActionResponse {
 }
 
 /// Approval outcome recorded in the audit ledger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ApprovalOutcome {
     Approved,
     Rejected,
 }
 
 /// Append-only audit event payload.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuditEventKind {
     EnrollmentTokenCreated {
         token_id: String,
@@ -1624,7 +1626,7 @@ pub enum AuditEventKind {
 }
 
 /// One immutable audit event.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditEvent {
     pub id: String,
     pub run_id: String,
@@ -1950,13 +1952,13 @@ impl ResourceDependencyPath {
 }
 
 /// Why the scheduler allowed a task to run.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SchedulerRunReason {
     DependenciesSatisfiedNoConflicts,
 }
 
 /// Why the scheduler made a task wait.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SchedulerWaitReason {
     DependencyIncomplete {
         dependency_id: String,
@@ -1976,7 +1978,7 @@ pub enum SchedulerWaitReason {
 }
 
 /// Scheduler decision for a single task.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SchedulerDecision {
     Run {
         task_id: String,

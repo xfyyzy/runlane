@@ -2,10 +2,10 @@ use std::path::Path;
 
 use crate::{
     ActionKind, ActionTarget, AgentResultStatus, AgentResultSubmission, AgentTaskEnvelope,
-    ApprovalOutcome, AuditEvent, AuditEventKind, AuditLedger, Capability, CapabilityReport,
-    EvidenceEnvelope, HelperActionRequest, HelperActionResponse, HelperActionStatus,
-    HelperAllowlist, HelperAllowlistEntry, HelperArgument, HelperValidationContext, LeaseMode,
-    LeaseSignatureStatus, SignedCapabilityLease, VerificationPlanner, VerificationPolicy,
+    AuditEvent, AuditEventKind, AuditLedger, Capability, CapabilityReport, EvidenceEnvelope,
+    HelperActionRequest, HelperActionResponse, HelperActionStatus, HelperAllowlist,
+    HelperAllowlistEntry, HelperArgument, HelperValidationContext, LeaseMode, LeaseSignatureStatus,
+    SignedCapabilityLease, VerificationPlanner, VerificationPolicy,
     analyzer::{ProposalPolicy, analyze_service_unhealthy, validate_proposal},
     approval::{ApprovalRecord, ApprovalStore},
     fleet::FleetRepository,
@@ -209,6 +209,7 @@ pub fn run_service_unhealthy_simulation(
             evidence.len()
         )));
     }
+    append_runtime_events(&mut ledger, run_id, control_plane.ledger.events())?;
     for evidence in &evidence {
         append(
             &mut ledger,
@@ -267,15 +268,7 @@ pub fn run_service_unhealthy_simulation(
             "lease-nonce-demo",
         )
         .map_err(|error| E2eError::Approval(format!("{error:?}")))?;
-    append(
-        &mut ledger,
-        run_id,
-        AuditEventKind::ApprovalDecision {
-            approval_id: "approval-demo-service-unhealthy".to_owned(),
-            actor: "operator".to_owned(),
-            outcome: ApprovalOutcome::Approved,
-        },
-    )?;
+    append_runtime_events(&mut ledger, run_id, approvals.ledger.events())?;
     append(
         &mut ledger,
         run_id,
@@ -399,6 +392,17 @@ fn append(ledger: &mut AuditLedger, run_id: &str, kind: AuditEventKind) -> Resul
             kind,
         ))
         .map_err(|error| E2eError::Receipt(format!("{error:?}")))
+}
+
+fn append_runtime_events(
+    ledger: &mut AuditLedger,
+    run_id: &str,
+    events: &[AuditEvent],
+) -> Result<(), E2eError> {
+    for event in events {
+        append(ledger, run_id, event.kind.clone())?;
+    }
+    Ok(())
 }
 
 fn evidence_for_collect_task(task_id: &str) -> Result<EvidenceEnvelope, E2eError> {
