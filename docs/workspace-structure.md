@@ -136,9 +136,11 @@ For v0.1, `runlane-server` and `runlane-agent` can expose CLI subcommands direct
 - Fixture-test platform command parsers.
 - Integration-test server/agent pull loop on localhost.
 - Contract-test helper lease verification.
-- Use fake platform backends in CI.
-- Run real Linux backend in CI.
-- Run FreeBSD/OpenBSD backend checks manually or via VM later.
+- Current CI runs Ubuntu Rust `fmt`, `check`, and `test`; do not claim broader
+  CI coverage without adding a workflow that executes it.
+- Use fake platform backends and parser fixtures in CI.
+- Run Linux native collector smoke, FreeBSD backend checks, and OpenBSD backend
+  checks locally or via VM until dedicated CI workflows exist.
 - Treat build/runtime version mismatch as an environment failure, not an
   application behavior. Do not accept a cross-built artifact as validated for a
   different OS release unless that compatibility target is explicitly recorded.

@@ -68,6 +68,9 @@ Every PR must include:
 Generic statements such as "tests passed" are not enough unless they name the
 commands or link to the CI run that executed them.
 
+Use `docs/verification-matrix.md` to decide which local, CI, cross-build, or VM
+checks apply to a PR. If a check did not run, say `not run` and why.
+
 ## PR Policy Check
 
 The pull request body policy is enforced by `.github/workflows/pr-policy.yml`
