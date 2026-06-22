@@ -101,6 +101,10 @@ fn execute(args: &[String]) -> Result<(), String> {
         ActionKind::RunAllowlistedScript => {
             Err("script.run_allowlisted dry-run is not implemented in v0.1 helper".to_owned())
         }
+        ActionKind::PackageUpdate | ActionKind::NodeReboot => Err(
+            "package.update and node.reboot are modeled core actions, not helper-executable actions in v0.1"
+                .to_owned(),
+        ),
     }
 }
 

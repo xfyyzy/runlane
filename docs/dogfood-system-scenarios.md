@@ -149,9 +149,11 @@ Resources:
 
 Verification:
 
-- package state consistent;
-- affected services restarted;
-- node reboot only after drain/exclusive lease.
+- package state matches declared policy;
+- package database is consistent;
+- affected services are identified and checked;
+- reboot-required state is detected when the package impact may affect reboot;
+- node reboot happens only after a drain/reboot lease and verifies node health.
 
 ### 5. Firewall rule reload
 
