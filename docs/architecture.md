@@ -299,7 +299,7 @@ The v0.1 Telegram approval adapter is intentionally narrow:
 - map a Telegram `chat_id` + `user_id` to a Runlane audit actor;
 - list and show pending approvals;
 - approve or reject by calling the same approval store methods used by CLI;
-- fail closed for unknown Telegram identities;
+- fail closed with audit evidence for unknown Telegram identities;
 - reject non-approval commands instead of interpreting chat text as operations.
 
 It must not schedule tasks, execute helper actions, parse runbooks, own policy
