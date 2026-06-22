@@ -1,7 +1,9 @@
 use std::{env, process};
 
 use runlane_core::{
-    approval::demo_approval_store, e2e::run_service_unhealthy_simulation, fleet::FleetRepository,
+    approval::demo_approval_store,
+    e2e::{run_disk_pressure_simulation, run_service_unhealthy_simulation},
+    fleet::FleetRepository,
 };
 
 fn main() {
@@ -113,14 +115,36 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("{}", simulation.receipt.render_text());
             Ok(())
         }
-        [receipt, show, id, path] if receipt == "receipt" && show == "show" => {
+        [demo, scenario, path] if demo == "demo" && scenario == "disk-pressure" => {
             let simulation =
-                run_service_unhealthy_simulation(path).map_err(|error| error.to_string())?;
-            if simulation.run_id != *id {
-                return Err(format!("unknown receipt: {id}"));
-            }
+                run_disk_pressure_simulation(path).map_err(|error| error.to_string())?;
+            println!("run: {}", simulation.run_id);
+            println!(
+                "stages: {}",
+                simulation
+                    .stages
+                    .iter()
+                    .map(|stage| format!("{stage:?}"))
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
+            );
             println!("{}", simulation.receipt.render_text());
             Ok(())
+        }
+        [receipt, show, id, path] if receipt == "receipt" && show == "show" => {
+            if id == "run-demo-service-unhealthy" {
+                let simulation =
+                    run_service_unhealthy_simulation(path).map_err(|error| error.to_string())?;
+                println!("{}", simulation.receipt.render_text());
+                return Ok(());
+            }
+            if id == "run-demo-disk-pressure" {
+                let simulation =
+                    run_disk_pressure_simulation(path).map_err(|error| error.to_string())?;
+                println!("{}", simulation.receipt.render_text());
+                return Ok(());
+            }
+            Err(format!("unknown receipt: {id}"))
         }
         _ => Err(format!("unsupported runlane command: {}", args.join(" "))),
     }
@@ -128,7 +152,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
 
 fn print_help() {
     println!(
-        "runlane commands:\n  runlane fleet validate <path>\n  runlane server gitops sync <path>\n  runlane approval list\n  runlane approval show <id>\n  runlane approval approve <id>\n  runlane approval reject <id>\n  runlane demo service-unhealthy <fleet-path>\n  runlane receipt show <id> <fleet-path>"
+        "runlane commands:\n  runlane fleet validate <path>\n  runlane server gitops sync <path>\n  runlane approval list\n  runlane approval show <id>\n  runlane approval approve <id>\n  runlane approval reject <id>\n  runlane demo service-unhealthy <fleet-path>\n  runlane demo disk-pressure <fleet-path>\n  runlane receipt show <id> <fleet-path>"
     );
 }
 

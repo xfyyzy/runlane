@@ -661,7 +661,10 @@ fn validate_actions(path: &Path, actions: &[String]) -> Result<(), FleetLoadErro
     for action in actions {
         if !matches!(
             action.as_str(),
-            "service.restart" | "service.reload" | "collect.more_logs"
+            "service.restart"
+                | "service.reload"
+                | "file.remove_from_allowlist"
+                | "collect.more_logs"
         ) {
             return Err(invalid(path, &format!("unknown action `{action}`")));
         }

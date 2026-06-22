@@ -4,10 +4,12 @@ layers:
 runbooks:
   enabled:
     - service-unhealthy
+    - disk-pressure
 policies:
   profile: production
 allowlists:
   enabled:
     - allow-prod-web-sshd-restart
+    - allow-prod-web-runlane-demo-cache-cleanup
     - allow-freebsd-edge-sshd-restart
     - allow-openbsd-edge-sshd-restart

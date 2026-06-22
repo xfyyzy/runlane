@@ -76,11 +76,13 @@ layers:
 runbooks:
   enabled:
     - service-unhealthy
+    - disk-pressure
 policies:
   profile: production
 allowlists:
   enabled:
     - allow-sshd-restart
+    - allow-prod-web-runlane-demo-cache-cleanup
 ```
 
 ## Runbook Schema
@@ -89,7 +91,8 @@ Runbooks declare layer, parameters, resources, collection, proposal options,
 leases, recovery actions, and verification. Runtime evidence is referenced by
 id after collection; it is not committed back to the runbook file.
 
-See `examples/runbooks/service-unhealthy.yaml`.
+See `examples/fleet/runbooks/service-unhealthy.yaml` and
+`examples/fleet/runbooks/disk-pressure.yaml`.
 
 ## Policy Schema
 
