@@ -115,8 +115,9 @@ Operator intent:
 
 ```bash
 runlane-server enrollment create --node prod-web-01 --os linux
+runlane-agent config init --config /etc/runlane-agent/agent.yaml ...
 runlane-agent enroll --server https://runlane.example --token <token>
-runlane-agent run
+runlane-agent run --config /etc/runlane-agent/agent.yaml
 ```
 
 Minimum behavior:
@@ -125,6 +126,15 @@ Minimum behavior:
 - agent identity uses mTLS after enrollment;
 - enrollment tokens are short-lived and auditable;
 - failed enrollment leaves no half-trusted node identity.
+- agent startup fails closed when local config, identity metadata, trust root,
+  certificate, private key, spool directory, permissions, or platform family do
+  not match the enrolled node.
+
+The current CLI-safe local state boundary is documented in
+[`agent-local-state.md`](agent-local-state.md). Until real enrollment transport
+writes local identity state, `runlane-agent identity install` persists the same
+metadata shape for development and tests without claiming to replace mTLS
+enrollment.
 
 ### 4. Capability Baseline
 
@@ -376,6 +386,8 @@ runlane-server enrollment create
 runlane fleet init
 runlane fleet validate
 runlane fleet sync
+runlane-agent config init
+runlane-agent config validate
 runlane-agent enroll
 runlane-agent run
 runlane incident create
