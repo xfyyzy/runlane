@@ -235,6 +235,15 @@ Do not keep talking about removed paths in docs, comments, or errors unless migr
 
 When a change is semantically complete and verifiable, commit it.
 
+Semantic commits belong on an issue branch, not directly on `main`. The normal
+repository path is:
+
+1. start from the latest `main`;
+2. create `issue-<number>-<short-slug>`;
+3. commit the coherent semantic change there;
+4. open a PR linked to the issue;
+5. let CI and review complete before merge.
+
 A commit should be:
 
 - coherent;
@@ -372,12 +381,13 @@ Whenever behavior or workflow changes, check at least:
 
 Before committing:
 
-1. inspect `git diff` and `git status`;
-2. verify no unrelated changes are included;
-3. run relevant checks;
-4. confirm docs are synced;
-5. confirm no silent fallback or hidden failure was introduced;
-6. write a semantic commit message.
+1. confirm the work is on the intended `issue-<number>-<short-slug>` branch;
+2. inspect `git diff` and `git status`;
+3. verify no unrelated changes are included;
+4. run relevant checks;
+5. confirm docs are synced;
+6. confirm no silent fallback or hidden failure was introduced;
+7. write a semantic commit message.
 
 ### 5.9 Verification mechanism
 

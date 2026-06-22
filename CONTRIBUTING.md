@@ -5,14 +5,31 @@ Runlane is currently in project-definition and v0.1 kernel-design stage.
 Before implementing, read:
 
 1. `AGENTS.md`
-2. `docs/project-charter.md`
-3. `docs/product-definition.md`
-4. `docs/operational-layer-model.md`
-5. `docs/execution-semantics.md`
-6. `docs/platform-model.md`
-7. `docs/coding-agent-brief.md`
+2. `docs/process/coding-agent-pr-workflow.md`
+3. `docs/project-charter.md`
+4. `docs/product-definition.md`
+5. `docs/operational-layer-model.md`
+6. `docs/execution-semantics.md`
+7. `docs/platform-model.md`
+8. `docs/coding-agent-brief.md`
 
 `AGENTS.md` defines the repository execution rules for human-supervised agents: no silent fallback, explicit failure, single-path convergence, prompt commits, tmux for long-running tasks, and verifiable handoff.
+
+## Required PR workflow
+
+Runtime, documentation, process, CI, and issue-template changes must use the
+issue branch and PR workflow:
+
+```bash
+git switch main
+git pull --ff-only
+git switch -c issue-<number>-<short-slug>
+```
+
+Commit only coherent semantic changes on that issue branch, push it, and open a
+PR that includes `Closes #<number>`. Fill the PR template with real command
+output, a self-review checklist, docs impact, and remaining risks. Direct
+mutation of `main` is not the valid contribution path.
 
 ## Toolchain requirement
 
