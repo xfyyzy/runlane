@@ -10,13 +10,52 @@ leases. It is not a shell gateway, command runner, or policy decision maker.
 The local OS grants the `runlane` agent user permission to invoke only the
 helper executable as root.
 
-Linux and FreeBSD sudoers concept:
+Install the helper as a root-owned executable. It must not be group- or
+world-writable, and it must not be a setuid shell wrapper.
+
+Linux sudo path:
+
+```bash
+sudo install -o root -g root -m 0755 \
+  target/x86_64-unknown-linux-musl/release/runlane-helper \
+  /usr/local/libexec/runlane-helper
+printf 'runlane ALL=(root) NOPASSWD: /usr/local/libexec/runlane-helper\n' |
+  sudo tee /etc/sudoers.d/runlane-helper
+sudo chmod 0440 /etc/sudoers.d/runlane-helper
+sudo visudo -cf /etc/sudoers.d/runlane-helper
+```
+
+FreeBSD sudo path:
+
+```bash
+sudo install -o root -g wheel -m 0755 \
+  target/x86_64-unknown-freebsd/release/runlane-helper \
+  /usr/local/libexec/runlane-helper
+printf 'runlane ALL=(root) NOPASSWD: /usr/local/libexec/runlane-helper\n' |
+  sudo tee /usr/local/etc/sudoers.d/runlane-helper
+sudo chmod 0440 /usr/local/etc/sudoers.d/runlane-helper
+sudo visudo -cf /usr/local/etc/sudoers.d/runlane-helper
+```
+
+OpenBSD doas path:
+
+```bash
+doas install -o root -g wheel -m 0755 \
+  /path/to/runlane-helper \
+  /usr/local/libexec/runlane-helper
+printf 'permit nopass runlane as root cmd /usr/local/libexec/runlane-helper\n' |
+  doas tee -a /etc/doas.conf
+```
+
+The resulting policy rule shape is:
+
+Linux and FreeBSD sudoers:
 
 ```text
 runlane ALL=(root) NOPASSWD: /usr/local/libexec/runlane-helper
 ```
 
-OpenBSD doas concept:
+OpenBSD doas:
 
 ```text
 permit nopass runlane as root cmd /usr/local/libexec/runlane-helper
@@ -24,6 +63,25 @@ permit nopass runlane as root cmd /usr/local/libexec/runlane-helper
 
 These rules do not allow arbitrary shell. They only allow invocation of the
 helper, which still fails closed unless every lease and allowlist check passes.
+
+Run preflight after installation through the installed helper path. On Linux
+and FreeBSD, use `sudo -n`; on OpenBSD, use `doas -n`.
+
+```bash
+sudo -n /usr/local/libexec/runlane-helper preflight \
+  --helper-binary /usr/local/libexec/runlane-helper \
+  --allowlist-file /etc/runlane/helper-allowlist.yaml \
+  --expected-owner-uid 0 \
+  --expected-mode 0755
+```
+
+Preflight checks that:
+
+1. the helper path exists and is a regular executable file;
+2. the helper owner uid and mode match the declared expectation;
+3. the helper is not group- or world-writable;
+4. the allowlist file is readable and parses as a helper allowlist;
+5. this helper build exposes dry-run validation support.
 
 The executable entrypoint is explicit:
 
@@ -40,6 +98,28 @@ runlane-helper execute \
 `--dry-run` validates the full typed boundary and returns structured success
 without mutating the developer machine. Non-dry-run host mutation is not
 implemented until real service restart execution is introduced deliberately.
+
+A reproducible local smoke uses fixtures under `examples/helper-smoke`:
+
+```bash
+cargo run -p runlane-helper -- dry-run-smoke \
+  --lease-file examples/helper-smoke/lease-valid.yaml \
+  --request-file examples/helper-smoke/request-restart.yaml \
+  --allowlist-file examples/helper-smoke/allowlist.yaml \
+  --node-id prod-web-01 \
+  --now 1780000000
+```
+
+The rejection path should fail before any action execution:
+
+```bash
+cargo run -p runlane-helper -- dry-run-smoke \
+  --lease-file examples/helper-smoke/lease-invalid-signature.yaml \
+  --request-file examples/helper-smoke/request-restart.yaml \
+  --allowlist-file examples/helper-smoke/allowlist.yaml \
+  --node-id prod-web-01 \
+  --now 1780000000
+```
 
 ## Lease Claims
 

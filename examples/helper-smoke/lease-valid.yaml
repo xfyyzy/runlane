@@ -1,0 +1,15 @@
+claims:
+  lease_id: lease-helper-smoke
+  run_id: run-helper-smoke
+  approval_id: approval-helper-smoke
+  node_id: prod-web-01
+  action: service.restart
+  target_resource_id: system:node/prod-web-01/service/sshd
+  target_subject: sshd
+  allowlist_entry_id: allow-prod-web-sshd-restart
+  expires_at_unix_seconds: 4102444800
+  nonce: nonce-helper-smoke
+key_id: smoke-key
+signature: smoke-signature
+signature_status: valid
+seen_nonces: []

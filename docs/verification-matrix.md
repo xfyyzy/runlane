@@ -60,7 +60,7 @@ Use targeted smoke commands when the change touches the corresponding surface:
 | Agent/server HTTP transport | `cargo test -p runlane-server http -- --nocapture` and, when a live smoke is useful, `cargo run -p runlane-server -- http demo-serve 127.0.0.1:17890` |
 | Agent native collectors | `cargo test -p runlane-agent platform -- --nocapture` and `cargo run -p runlane-agent -- collect-smoke --service sshd` |
 | Approval API/CLI | `cargo run -p runlane -- approval list`, `show`, `approve`, and `reject` |
-| Helper boundary | `cargo run -p runlane-helper -- --help` plus a dry-run accept/reject fixture when helper request logic changes |
+| Helper boundary | `cargo run -p runlane-helper -- --help`, `cargo run -p runlane-helper -- preflight --helper-binary target/debug/runlane-helper --allowlist-file examples/helper-smoke/allowlist.yaml --expected-owner-uid "$(id -u)" --expected-mode "$(stat -c %a target/debug/runlane-helper)"`, and `cargo run -p runlane-helper -- dry-run-smoke --lease-file examples/helper-smoke/lease-valid.yaml --request-file examples/helper-smoke/request-restart.yaml --allowlist-file examples/helper-smoke/allowlist.yaml --node-id prod-web-01 --now 1780000000` plus one rejection fixture when helper request logic changes |
 | E2E receipt path | `cargo run -p runlane -- demo service-unhealthy examples/fleet` and `cargo run -p runlane -- receipt show run-demo-service-unhealthy examples/fleet` |
 
 ## Cross-Build And VM Checks
