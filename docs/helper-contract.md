@@ -121,6 +121,31 @@ cargo run -p runlane-helper -- dry-run-smoke \
   --now 1780000000
 ```
 
+A real Linux install smoke exercises the sudo boundary through an installed
+root-owned helper:
+
+```bash
+RUNLANE_HELPER_SMOKE_USER=runlane scripts/smoke/linux-helper-install.sh
+```
+
+The smoke builds `runlane-helper` in release mode, installs it at
+`/usr/local/libexec/runlane-helper`, installs the fixture allowlist at
+`/etc/runlane/helper-allowlist.yaml`, writes this sudoers fragment, validates it
+with `visudo`, then invokes the installed helper through `sudo -n` as the smoke
+user:
+
+```text
+runlane ALL=(root) NOPASSWD: /usr/local/libexec/runlane-helper
+```
+
+It fails before installation if the smoke user already has arbitrary root shell
+access through sudo, and it fails after installing if `/bin/sh` becomes allowed
+through the smoke rule. It then runs installed-helper `preflight`, a valid
+dry-run request, and the invalid-signature rejection fixture. By default the
+script restores the prior helper, allowlist, and sudoers state before exiting.
+Use `--keep-installed` only when a reviewer needs to inspect the host, then run
+the rollback commands printed by the script.
+
 ## Lease Claims
 
 A signed capability lease binds all of these fields:
