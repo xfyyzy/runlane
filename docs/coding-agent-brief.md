@@ -30,18 +30,22 @@ The goal is not to build a generic agent framework. The goal is to make real mac
 Read these in order:
 
 1. `AGENTS.md`
-2. `README.md`
-3. `docs/project-charter.md`
-4. `docs/product-definition.md`
-5. `docs/operational-layer-model.md`
-6. `docs/architecture.md`
-7. `docs/execution-semantics.md`
-8. `docs/platform-model.md`
-9. `docs/workspace-structure.md`
-10. `docs/milestones/v0.1.md`
-11. `docs/adr/0001-cross-platform-native-agent.md`
+2. `docs/process/coding-agent-pr-workflow.md`
+3. `README.md`
+4. `docs/project-charter.md`
+5. `docs/product-definition.md`
+6. `docs/operational-layer-model.md`
+7. `docs/architecture.md`
+8. `docs/execution-semantics.md`
+9. `docs/platform-model.md`
+10. `docs/workspace-structure.md`
+11. `docs/milestones/v0.1.md`
+12. `docs/adr/0001-cross-platform-native-agent.md`
 
 Do not implement from memory or from generic agent-platform assumptions.
+
+Coding agents implement through issue branches and PRs. A direct `main` commit
+is not the valid path for semantic repository changes.
 
 ## Implementation philosophy
 
@@ -93,6 +97,8 @@ For any feature, "done" means:
 - audit events record the important decision;
 - failure modes fail closed;
 - docs/examples are updated if semantics changed.
+- a PR links the issue, includes real verification output, and records
+  self-review before merge.
 
 ## Common wrong turns
 
