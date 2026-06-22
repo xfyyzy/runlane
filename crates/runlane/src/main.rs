@@ -3,6 +3,7 @@ use std::{env, process};
 use runlane_core::{
     ApprovalOutcome, AuditEventKind,
     approval::{ApprovalState, demo_approval_store},
+    durable::LocalServerState,
     e2e::{run_disk_pressure_simulation, run_service_unhealthy_simulation},
     fleet::FleetRepository,
     telegram::{
@@ -157,7 +158,12 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 println!("{}", simulation.receipt.render_text());
                 return Ok(());
             }
-            Err(format!("unknown receipt: {id}"))
+            let state = LocalServerState::open(path);
+            let receipt = state.render_receipt(id).map_err(|error| {
+                format!("unknown receipt or unreadable state for {id}: {error}")
+            })?;
+            println!("{}", receipt.render_text());
+            Ok(())
         }
         _ => Err(format!("unsupported runlane command: {}", args.join(" "))),
     }
@@ -165,7 +171,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
 
 fn print_help() {
     println!(
-        "runlane commands:\n  runlane fleet validate <path>\n  runlane server gitops sync <path>\n  runlane approval list\n  runlane approval show <id>\n  runlane approval approve <id>\n  runlane approval reject <id>\n  runlane telegram approval live-simulated-smoke\n  runlane demo service-unhealthy <fleet-path>\n  runlane demo disk-pressure <fleet-path>\n  runlane receipt show <id> <fleet-path>"
+        "runlane commands:\n  runlane fleet validate <path>\n  runlane server gitops sync <path>\n  runlane approval list\n  runlane approval show <id>\n  runlane approval approve <id>\n  runlane approval reject <id>\n  runlane telegram approval live-simulated-smoke\n  runlane demo service-unhealthy <fleet-path>\n  runlane demo disk-pressure <fleet-path>\n  runlane receipt show <id> <fleet-or-state-path>"
     );
 }
 

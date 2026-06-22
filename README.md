@@ -295,6 +295,18 @@ cargo run -p runlane -- demo service-unhealthy examples/fleet
 cargo run -p runlane -- receipt show run-demo-service-unhealthy examples/fleet
 ```
 
+Run the controlled Linux real-host service-unhealthy dogfood smoke on a
+Linux/systemd host with passwordless sudo:
+
+```bash
+scripts/smoke/linux-service-unhealthy-dogfood.sh
+```
+
+The script creates only `runlane-demo-unhealthy.service`, collects native host
+evidence, validates the helper path in dry-run mode, renders
+`run-real-host-service-unhealthy` back from durable local state, and removes the
+demo unit. It is not a production service restart path.
+
 Persist the same demo ledger to local server state and render the receipt after
 reload:
 

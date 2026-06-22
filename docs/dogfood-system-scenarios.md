@@ -76,6 +76,39 @@ cargo run -p runlane -- demo service-unhealthy examples/fleet
 cargo run -p runlane -- receipt show run-demo-service-unhealthy examples/fleet
 ```
 
+The Linux real-host dogfood smoke bridges from that fixture path to native host
+evidence without restarting a production service:
+
+```bash
+scripts/smoke/linux-service-unhealthy-dogfood.sh
+```
+
+The script creates only the fixed controlled systemd unit
+`runlane-demo-unhealthy.service`, intentionally starts it into a failed state,
+runs the native Linux collectors, validates the typed helper request in dry-run
+mode, persists the audit ledger to a temporary local state directory, renders
+the receipt back through `runlane receipt show`, and removes the demo unit on
+exit. It must not be repointed at an arbitrary production service.
+
+The underlying commands are:
+
+```bash
+rm -rf /tmp/runlane-service-dogfood-state
+cargo run -p runlane-agent -- collect-smoke --service runlane-demo-unhealthy.service
+cargo run -p runlane-agent -- dogfood-service-unhealthy \
+  --service runlane-demo-unhealthy.service \
+  --state-dir /tmp/runlane-service-dogfood-state \
+  --node-id prod-web-01
+cargo run -p runlane -- receipt show \
+  run-real-host-service-unhealthy \
+  /tmp/runlane-service-dogfood-state
+```
+
+`dogfood-service-unhealthy` currently requires Linux/systemd because this
+specific smoke is a controlled real-host service failure. FreeBSD and OpenBSD
+remain first-class targets through their native VM validation scripts and native
+collector smoke paths; this Linux smoke is not a cross-platform downgrade.
+
 Restart lease:
 
 - `exclusive` on `system:node/<node>/service/<service>`;
