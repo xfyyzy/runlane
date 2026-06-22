@@ -149,7 +149,8 @@ For v0.1, `runlane-server` and `runlane-agent` can expose CLI subcommands direct
 
 Initial release artifacts:
 
-- `x86_64-unknown-linux-musl` for Linux;
+- `x86_64-unknown-linux-musl` for Linux, built and verified with
+  `scripts/release/linux-x86_64-musl.sh`;
 - `aarch64-unknown-linux-musl` if needed;
 - FreeBSD x86_64 binary built and tested against the same current stable
   FreeBSD release;

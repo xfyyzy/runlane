@@ -73,7 +73,7 @@ or cross-platform semantics.
 
 | Target | When required | Evidence to report |
 |---|---|---|
-| Linux x86_64 musl | Release artifact or Linux static binary behavior changes | `cargo build --workspace --target x86_64-unknown-linux-musl --release` plus `codex-assert-static-elf` for produced binaries |
+| Linux x86_64 musl | Release artifact or Linux static binary behavior changes | `scripts/release/linux-x86_64-musl.sh`; it checks the `x86_64-unknown-linux-musl` Rust target, builds the workspace in release mode, rejects artifacts with `PT_INTERP` or `DT_NEEDED`, and writes checksums plus `file` output under `target/release-evidence/` |
 | Linux aarch64 musl | aarch64 release artifact or linker/build configuration changes | `cargo build --workspace --target aarch64-unknown-linux-musl --release` plus `codex-assert-static-elf` |
 | FreeBSD x86_64 | FreeBSD backend/helper behavior or FreeBSD release artifact changes | FreeBSD release-aligned cross build using the current stable FreeBSD sysroot, static artifact check, and FreeBSD VM smoke when runtime behavior changed |
 | OpenBSD x86_64 | OpenBSD backend/helper behavior or OpenBSD release validation | Native OpenBSD VM `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo test --workspace`, and relevant binary smoke |

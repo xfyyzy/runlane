@@ -190,6 +190,22 @@ performed inside a native OpenBSD VM with a Rust toolchain that satisfies the
 project MSRV. Do not treat nightly `-Zbuild-std`, an older OpenBSD Rust package,
 or a Linux-hosted OpenBSD cross build as the default project path.
 
+Build the current Linux x86_64 static release artifacts with:
+
+```bash
+scripts/release/linux-x86_64-musl.sh
+```
+
+The script requires the `x86_64-unknown-linux-musl` Rust target and standard ELF
+inspection tools. If the Rust target is missing, repair with:
+
+```bash
+rustup target add x86_64-unknown-linux-musl
+```
+
+On success it writes artifact paths, `file` output, static ELF assertions, and
+sha256 checksums under `target/release-evidence/`.
+
 ## Fleet Fixture
 
 The executable v0.1 fleet fixture lives in [`examples/fleet`](examples/fleet).
