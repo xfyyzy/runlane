@@ -165,7 +165,8 @@ Read in this order before implementing:
 15. [`docs/user-journey-v0.1.md`](docs/user-journey-v0.1.md)
 16. [`docs/milestones/v0.1.md`](docs/milestones/v0.1.md)
 17. [`docs/verification-matrix.md`](docs/verification-matrix.md)
-18. [`docs/adr/0001-cross-platform-native-agent.md`](docs/adr/0001-cross-platform-native-agent.md)
+18. [`docs/process/evidence-artifacts.md`](docs/process/evidence-artifacts.md)
+19. [`docs/adr/0001-cross-platform-native-agent.md`](docs/adr/0001-cross-platform-native-agent.md)
 
 ## Development
 
@@ -196,6 +197,11 @@ host-mutating or VM smokes, such as helper installation and BSD VM validation,
 use their exact name plus `--confirm-host-mutation`; the runner prints side
 effects before execution and keeps the underlying `scripts/smoke/*.sh` checks
 intact. Use `--dry-run` to print those commands without executing them.
+
+Durable validation evidence belongs in GitHub Actions artifacts, not committed
+raw logs. Use the `Evidence` workflow for artifact-backed smoke evidence and
+record the workflow URL plus artifact name in PRs or acceptance reports. See
+[`docs/process/evidence-artifacts.md`](docs/process/evidence-artifacts.md).
 
 Cross-platform validation must keep build and runtime baselines aligned. Linux
 and FreeBSD release artifacts may be cross-built when the target sysroot and
