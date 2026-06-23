@@ -10,6 +10,7 @@ Closes #21
 
 - [x] `cargo fmt --all -- --check`
 - [x] `cargo check --workspace`
+- [x] `cargo clippy --workspace --all-targets -- -D warnings`
 - [x] `cargo test --workspace`
 - [x] `scripts/ci/check-pr-policy.sh docs/process/pr-policy-fixtures/passing.md`
 

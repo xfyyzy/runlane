@@ -148,7 +148,7 @@ impl ApprovalStore {
     ) -> Result<CapabilityLeaseClaims, ApprovalError> {
         let index = self.index_of(id)?;
         let record = self.records[index].clone();
-        self.ensure_pending_not_stale(&record, now_unix_seconds)?;
+        Self::ensure_pending_not_stale(&record, now_unix_seconds)?;
         if record.action_id != expected_action_id {
             return Err(ApprovalError::ActionMismatch);
         }
@@ -185,7 +185,7 @@ impl ApprovalStore {
     ) -> Result<(), ApprovalError> {
         let index = self.index_of(id)?;
         let record = self.records[index].clone();
-        self.ensure_pending_not_stale(&record, now_unix_seconds)?;
+        Self::ensure_pending_not_stale(&record, now_unix_seconds)?;
         self.records[index].state = ApprovalState::Rejected;
         self.append_event(AuditEventKind::ApprovalDecision {
             approval_id: id.to_owned(),
@@ -242,7 +242,6 @@ impl ApprovalStore {
     }
 
     fn ensure_pending_not_stale(
-        &self,
         record: &ApprovalRecord,
         now_unix_seconds: u64,
     ) -> Result<(), ApprovalError> {

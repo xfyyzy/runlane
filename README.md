@@ -174,11 +174,12 @@ Runlane currently requires **Rust stable 1.96.0 or newer**. The Cargo MSRV field
 rustc --version
 cargo fmt --all -- --check
 cargo check --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Current CI requires the Ubuntu Rust `fmt`, `check`, and `test` job plus the PR
-policy check. Cross-build and VM validation are not part of current CI; report
+Current CI requires the Ubuntu Rust `fmt`, `check`, `clippy`, and `test` job
+plus the PR policy check. Cross-build and VM validation are not part of current CI; report
 them as local/manual checks using [`docs/verification-matrix.md`](docs/verification-matrix.md).
 
 Cross-platform validation must keep build and runtime baselines aligned. Linux

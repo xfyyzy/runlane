@@ -8,13 +8,14 @@ use runlane_core::{
 use serde_yaml::Value;
 
 fn main() {
-    if let Err(error) = run(env::args().skip(1).collect()) {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    if let Err(error) = run(&args) {
         eprintln!("{error}");
         process::exit(1);
     }
 }
 
-fn run(args: Vec<String>) -> Result<(), String> {
+fn run(args: &[String]) -> Result<(), String> {
     if args.is_empty() {
         print_skeleton();
         return Ok(());
@@ -81,7 +82,7 @@ fn execute(args: &[String]) -> Result<(), String> {
         loaded.allowlist,
     );
     let accepted = validate_helper_request(&loaded.request, &loaded.lease, &context)
-        .map_err(format_rejection)?;
+        .map_err(|error| format_rejection(&error))?;
 
     match accepted.action {
         ActionKind::ServiceRestart => {
@@ -176,6 +177,9 @@ impl HelperPreflightReport {
                 helper_path.display()
             ));
         }
+        #[cfg(unix)]
+        let (owner_uid, mode) = unix_owner_and_mode(&metadata);
+        #[cfg(not(unix))]
         let (owner_uid, mode) = unix_owner_and_mode(&metadata)?;
         if owner_uid != options.expected_owner_uid {
             return Err(format!(
@@ -224,10 +228,10 @@ fn parse_octal_mode(value: &str) -> Result<u32, String> {
 }
 
 #[cfg(unix)]
-fn unix_owner_and_mode(metadata: &fs::Metadata) -> Result<(u32, u32), String> {
+fn unix_owner_and_mode(metadata: &fs::Metadata) -> (u32, u32) {
     use std::os::unix::fs::MetadataExt;
 
-    Ok((metadata.uid(), metadata.mode() & 0o7777))
+    (metadata.uid(), metadata.mode() & 0o7777)
 }
 
 #[cfg(not(unix))]
@@ -421,18 +425,20 @@ fn parse_seen_nonces(value: &Value) -> Result<Vec<String>, String> {
     value
         .get("seen_nonces")
         .and_then(Value::as_sequence)
-        .map(|values| {
-            values
-                .iter()
-                .map(|value| {
-                    value
-                        .as_str()
-                        .map(ToOwned::to_owned)
-                        .ok_or_else(|| "seen_nonces entries must be strings".to_owned())
-                })
-                .collect()
-        })
-        .unwrap_or_else(|| Ok(Vec::new()))
+        .map_or_else(
+            || Ok(Vec::new()),
+            |values| {
+                values
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(ToOwned::to_owned)
+                            .ok_or_else(|| "seen_nonces entries must be strings".to_owned())
+                    })
+                    .collect()
+            },
+        )
 }
 
 fn parse_action(value: &str) -> Result<ActionKind, String> {
@@ -465,7 +471,7 @@ fn unsigned(value: &Value, key: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("missing unsigned integer field `{key}`"))
 }
 
-fn format_rejection(rejection: HelperRejection) -> String {
+fn format_rejection(rejection: &HelperRejection) -> String {
     format!("helper request rejected: {rejection:?}")
 }
 
@@ -484,7 +490,7 @@ mod tests {
     fn loads_allowlist_and_accepts_dry_run_restart() {
         let fixture = HelperFixture::write("helper-ok", "valid", 200, &[]);
         let args = fixture.args(100);
-        run(args).expect("valid dry-run helper request succeeds");
+        run(&args).expect("valid dry-run helper request succeeds");
         fixture.remove();
     }
 
@@ -494,29 +500,29 @@ mod tests {
         let mut args = vec!["dry-run-smoke".to_owned()];
         args.extend(fixture.args_without_command(100));
         args.retain(|arg| arg != "--dry-run");
-        run(args).expect("dry-run smoke validates typed request");
+        run(&args).expect("dry-run smoke validates typed request");
         fixture.remove();
     }
 
     #[test]
     fn dry_run_accepts_typed_allowlisted_file_remove() {
         let fixture = HelperFixture::write_file_remove("helper-file-remove-ok");
-        run(fixture.args(100)).expect("allowlisted file removal dry-run validates");
+        run(&fixture.args(100)).expect("allowlisted file removal dry-run validates");
         fixture.remove();
     }
 
     #[test]
     fn rejects_invalid_expired_replayed_or_disallowed_before_action() {
         let invalid = HelperFixture::write("helper-invalid", "invalid", 200, &[]);
-        assert!(run(invalid.args(100)).is_err());
+        assert!(run(&invalid.args(100)).is_err());
         invalid.remove();
 
         let expired = HelperFixture::write("helper-expired", "valid", 99, &[]);
-        assert!(run(expired.args(100)).is_err());
+        assert!(run(&expired.args(100)).is_err());
         expired.remove();
 
         let replayed = HelperFixture::write("helper-replayed", "valid", 200, &["nonce-1"]);
-        assert!(run(replayed.args(100)).is_err());
+        assert!(run(&replayed.args(100)).is_err());
         replayed.remove();
 
         let disallowed = HelperFixture::write_with_target(
@@ -526,7 +532,7 @@ mod tests {
             &[],
             "system:node/prod-web-01/service/other",
         );
-        assert!(run(disallowed.args(100)).is_err());
+        assert!(run(&disallowed.args(100)).is_err());
         disallowed.remove();
     }
 
@@ -540,7 +546,7 @@ mod tests {
             .nth(1)
             .expect("node id argument exists");
         *node_value = "other-node".to_owned();
-        assert!(run(node_args).is_err());
+        assert!(run(&node_args).is_err());
         node.remove();
 
         let lease = HelperFixture::write("helper-lease-mismatch", "valid", 200, &[]);
@@ -550,7 +556,7 @@ mod tests {
             "system:node/prod-web-01/service/sshd",
             "sshd",
         );
-        assert!(run(lease.args(100)).is_err());
+        assert!(run(&lease.args(100)).is_err());
         lease.remove();
 
         let action = HelperFixture::write("helper-action-mismatch", "valid", 200, &[]);
@@ -560,7 +566,7 @@ mod tests {
             "system:node/prod-web-01/service/sshd",
             "sshd",
         );
-        assert!(run(action.args(100)).is_err());
+        assert!(run(&action.args(100)).is_err());
         action.remove();
 
         let target = HelperFixture::write("helper-target-mismatch", "valid", 200, &[]);
@@ -570,7 +576,7 @@ mod tests {
             "system:node/prod-web-01/service/other",
             "other",
         );
-        assert!(run(target.args(100)).is_err());
+        assert!(run(&target.args(100)).is_err());
         target.remove();
     }
 
@@ -580,7 +586,7 @@ mod tests {
         let fixture = HelperFixture::write("helper-no-dry-run", "valid", 200, &[]);
         let mut args = fixture.args(100);
         args.retain(|arg| arg != "--dry-run");
-        let error = run(args).expect_err("non-dry-run execution is rejected before action");
+        let error = run(&args).expect_err("non-dry-run execution is rejected before action");
         assert!(error.contains("non-dry-run"));
         fixture.remove();
     }
@@ -592,7 +598,7 @@ mod tests {
         let helper_binary = fixture.write_helper_binary(0o755);
         let metadata = fs::metadata(&helper_binary).expect("helper metadata readable");
         let args = fixture.preflight_args(&helper_binary, metadata.uid(), 0o755);
-        run(args).expect("preflight accepts expected binary and allowlist");
+        run(&args).expect("preflight accepts expected binary and allowlist");
         fixture.remove();
     }
 
@@ -605,27 +611,27 @@ mod tests {
 
         let missing =
             fixture.preflight_args(&fixture.root.join("missing-helper"), metadata.uid(), 0o755);
-        assert!(run(missing).is_err());
+        assert!(run(&missing).is_err());
 
         let wrong_owner =
             fixture.preflight_args(&helper_binary, metadata.uid().saturating_add(1), 0o755);
-        assert!(run(wrong_owner).is_err());
+        assert!(run(&wrong_owner).is_err());
 
         let wrong_mode = fixture.preflight_args(&helper_binary, metadata.uid(), 0o700);
-        assert!(run(wrong_mode).is_err());
+        assert!(run(&wrong_mode).is_err());
 
         let writable = fixture.write_helper_binary(0o775);
         let writable_metadata = fs::metadata(&writable).expect("helper metadata readable");
         let writable_args = fixture.preflight_args(&writable, writable_metadata.uid(), 0o775);
-        assert!(run(writable_args).is_err());
+        assert!(run(&writable_args).is_err());
 
-        let missing_allowlist = fixture.preflight_args_with_allowlist(
+        let missing_allowlist = HelperFixture::preflight_args_with_allowlist(
             &helper_binary,
             &fixture.root.join("missing-allowlist.yaml"),
             metadata.uid(),
             0o755,
         );
-        assert!(run(missing_allowlist).is_err());
+        assert!(run(&missing_allowlist).is_err());
         fixture.remove();
     }
 
@@ -674,7 +680,7 @@ mod tests {
             fs::write(
                 root.join("lease.yaml"),
                 format!(
-                    r#"
+                    r"
 claims:
   lease_id: lease-1
   run_id: run-1
@@ -691,7 +697,7 @@ signature: test-signature
 signature_status: {signature_status}
 seen_nonces:
 {}
-"#,
+",
                     seen.iter()
                         .map(|nonce| format!("  - {nonce}"))
                         .collect::<Vec<_>>()
@@ -702,12 +708,12 @@ seen_nonces:
             fs::write(
                 root.join("allowlist.yaml"),
                 format!(
-                    r#"
+                    r"
 entries:
   - id: allow-sshd-restart
     action: service.restart
     target_resource_id: {allowlist_target}
-"#
+"
                 ),
             )
             .expect("allowlist written");
@@ -726,7 +732,7 @@ entries:
             fs::create_dir_all(&root).expect("fixture dir created");
             fs::write(
                 root.join("lease.yaml"),
-                r#"
+                r"
 claims:
   lease_id: lease-1
   run_id: run-1
@@ -742,29 +748,29 @@ key_id: test-key
 signature: test-signature
 signature_status: valid
 seen_nonces: []
-"#,
+",
             )
             .expect("lease written");
             fs::write(
                 root.join("request.yaml"),
-                r#"
+                r"
 lease_id: lease-1
 action: file.remove_from_allowlist
 target_resource_id: system:node/prod-web-01/path/var-tmp-runlane-demo-cache
 target_subject: /var/tmp/runlane-demo-cache
 arguments:
   path: /var/tmp/runlane-demo-cache
-"#,
+",
             )
             .expect("request written");
             fs::write(
                 root.join("allowlist.yaml"),
-                r#"
+                r"
 entries:
   - id: allow-runlane-demo-cache-cleanup
     action: file.remove_from_allowlist
     target_resource_id: system:node/prod-web-01/path/var-tmp-runlane-demo-cache
-"#,
+",
             )
             .expect("allowlist written");
             Self { root }
@@ -780,14 +786,14 @@ entries:
             fs::write(
                 self.root.join("request.yaml"),
                 format!(
-                    r#"
+                    r"
 lease_id: {lease_id}
 action: {action}
 target_resource_id: {target_resource_id}
 target_subject: {target_subject}
 arguments:
   service: {target_subject}
-"#
+"
                 ),
             )
             .expect("request written");
@@ -830,7 +836,7 @@ arguments:
             owner_uid: u32,
             mode: u32,
         ) -> Vec<String> {
-            self.preflight_args_with_allowlist(
+            Self::preflight_args_with_allowlist(
                 helper_binary,
                 &self.root.join("allowlist.yaml"),
                 owner_uid,
@@ -840,7 +846,6 @@ arguments:
 
         #[cfg(unix)]
         fn preflight_args_with_allowlist(
-            &self,
             helper_binary: &std::path::Path,
             allowlist_file: &std::path::Path,
             owner_uid: u32,

@@ -888,7 +888,10 @@ mod tests {
 
     #[test]
     fn parses_service_unhealthy_fixtures_for_each_first_class_platform() {
-        let cases: [(&dyn PlatformBackend, [(EvidenceKind, &str); 5]); 3] = [
+        type FixtureSet = [(EvidenceKind, &'static str); 5];
+        type BackendCase<'a> = (&'a dyn PlatformBackend, FixtureSet);
+
+        let cases: [BackendCase<'_>; 3] = [
             (
                 &LinuxBackend,
                 [

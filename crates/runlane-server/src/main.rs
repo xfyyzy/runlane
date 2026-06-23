@@ -14,14 +14,15 @@ use runlane_core::{
 };
 
 fn main() {
-    if let Err(error) = run(env::args().skip(1).collect()) {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    if let Err(error) = run(&args) {
         eprintln!("{error}");
         process::exit(1);
     }
 }
 
-fn run(args: Vec<String>) -> Result<(), String> {
-    match args.as_slice() {
+fn run(args: &[String]) -> Result<(), String> {
+    match args {
         [] => {
             println!(
                 "runlane-server skeleton; initial_run_state={:?}",

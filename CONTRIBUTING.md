@@ -45,6 +45,7 @@ Runlane currently requires **Rust stable 1.96.0 or newer**.
 rustc --version
 cargo fmt --all -- --check
 cargo check --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
