@@ -1,0 +1,117 @@
+name: Evidence
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/evidence.yml"
+      - "scripts/smoke/**"
+      - "xtask/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - "docs/**"
+  workflow_dispatch:
+    inputs:
+      smoke:
+        description: "Smoke evidence set to run"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - "all"
+          - "safe"
+          - "fleet"
+          - "control-plane"
+          - "http"
+          - "telegram-live-simulated"
+          - "e2e"
+          - "host-mutating-dry-runs"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-evidence:
+    runs-on: ubuntu-latest
+    env:
+      RUNLANE_EVIDENCE_SMOKE: ${{ github.event_name == 'workflow_dispatch' && inputs.smoke || 'all' }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install smoke tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+      - name: Run smoke evidence
+        run: |
+          set -euo pipefail
+          mkdir -p target/evidence
+
+          {
+            echo "repository: ${GITHUB_REPOSITORY}"
+            echo "workflow: ${GITHUB_WORKFLOW}"
+            echo "run_id: ${GITHUB_RUN_ID}"
+            echo "run_attempt: ${GITHUB_RUN_ATTEMPT}"
+            echo "event: ${GITHUB_EVENT_NAME}"
+            echo "ref: ${GITHUB_REF}"
+            echo "sha: ${GITHUB_SHA}"
+            echo "smoke: ${RUNLANE_EVIDENCE_SMOKE}"
+            echo "rustc: $(rustc --version)"
+            echo "cargo: $(cargo --version)"
+            echo "generated_at_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > target/evidence/metadata.txt
+
+          cp docs/process/evidence-artifacts.md target/evidence/evidence-policy.md
+          cp docs/milestones/v0.1.2-acceptance-report.md \
+            target/evidence/v0.1.2-acceptance-report.md
+
+          run_and_capture() {
+            name="$1"
+            shift
+            {
+              echo "command: $*"
+              "$@"
+            } 2>&1 | tee "target/evidence/${name}.log"
+          }
+
+          run_host_mutating_dry_runs() {
+            run_and_capture linux-helper-install-dry-run \
+              cargo xtask smoke linux-helper-install --dry-run
+            run_and_capture linux-service-unhealthy-dogfood-dry-run \
+              cargo xtask smoke linux-service-unhealthy-dogfood --dry-run
+            run_and_capture freebsd-vm-validation-dry-run \
+              cargo xtask smoke freebsd-vm-validation --dry-run
+            run_and_capture openbsd-vm-validation-dry-run \
+              cargo xtask smoke openbsd-vm-validation --dry-run
+          }
+
+          case "${RUNLANE_EVIDENCE_SMOKE}" in
+            all)
+              run_and_capture safe cargo xtask smoke safe
+              run_host_mutating_dry_runs
+              ;;
+            safe)
+              run_and_capture safe cargo xtask smoke safe
+              ;;
+            fleet | control-plane | http | telegram-live-simulated | e2e)
+              run_and_capture "${RUNLANE_EVIDENCE_SMOKE}" \
+                cargo xtask smoke "${RUNLANE_EVIDENCE_SMOKE}"
+              ;;
+            host-mutating-dry-runs)
+              run_host_mutating_dry_runs
+              ;;
+            *)
+              echo "unsupported smoke evidence set: ${RUNLANE_EVIDENCE_SMOKE}" >&2
+              exit 2
+              ;;
+          esac
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: runlane-evidence-${{ env.RUNLANE_EVIDENCE_SMOKE }}-${{ github.run_id }}
+          path: target/evidence/
+          if-no-files-found: error
+          retention-days: 90

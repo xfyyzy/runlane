@@ -14,6 +14,11 @@ Runlane verification claims must say what actually ran. Do not use generic
 
 If a check is not run, leave the PR checkbox unchecked and state why.
 
+Durable validation evidence must be stored as GitHub Actions artifacts instead
+of committed raw logs. Use the `Evidence` workflow for artifact-backed smoke
+evidence, and record the Actions run URL plus artifact name in PRs or acceptance
+reports. See [`docs/process/evidence-artifacts.md`](process/evidence-artifacts.md).
+
 ## Current Required PR Checks
 
 Current GitHub branch protection requires these checks before merging to
@@ -100,6 +105,7 @@ In PRs and issue comments, prefer this shape:
 Verification:
 - CI rust: passed, <Actions URL>
 - CI pr-policy: passed, <Actions URL>
+- Evidence artifact: <Evidence workflow URL>, artifact <artifact name>
 - Local: cargo fmt --all -- --check, cargo check --workspace, cargo clippy --workspace --all-targets -- -D warnings, cargo test --workspace
 - Cross/VM: not run; docs-only change did not touch platform runtime or release artifacts
 ```

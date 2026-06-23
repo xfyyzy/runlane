@@ -12,7 +12,8 @@ Before implementing, read:
 6. `docs/execution-semantics.md`
 7. `docs/platform-model.md`
 8. `docs/verification-matrix.md`
-9. `docs/coding-agent-brief.md`
+9. `docs/process/evidence-artifacts.md`
+10. `docs/coding-agent-brief.md`
 
 `AGENTS.md` defines the repository execution rules for human-supervised agents: no silent fallback, explicit failure, single-path convergence, prompt commits, tmux for long-running tasks, and verifiable handoff.
 
@@ -54,6 +55,11 @@ check. It does not run release cross-builds or BSD VM smoke. Use
 `docs/verification-matrix.md` to decide which local, manual, cross-build, or VM
 checks apply to a change, and report checks as run, not run, or blocked with
 real command output or CI links.
+
+Raw validation logs, VM transcripts, helper install output, and secret-adjacent
+adapter output do not belong in the source repository. Use the `Evidence`
+GitHub Actions workflow for artifact-backed smoke evidence, then cite the
+workflow run URL and artifact name in the PR or acceptance report.
 
 ## Smoke checks
 
