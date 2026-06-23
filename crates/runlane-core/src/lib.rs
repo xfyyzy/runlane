@@ -904,6 +904,24 @@ pub enum ServiceUnhealthyPlanError {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServiceUnhealthyCapabilities {
+    driver: ServiceManagerDriver,
+    service: Capability,
+    log: Capability,
+    process: Capability,
+    socket: Capability,
+    storage: Capability,
+    privilege: Capability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiskPressureCapabilities {
+    storage: Capability,
+    log: Capability,
+    privilege: Capability,
+}
+
 /// Plans the cross-platform service-unhealthy dogfood runbook without executing it.
 ///
 /// The planner selects only the native service manager declared by the
@@ -920,37 +938,7 @@ pub fn plan_service_unhealthy_runbook(
         });
     }
 
-    let driver = service_manager_driver_for_os(report.os)?;
-    let service_capability = require_reported_capability(
-        report,
-        driver.capability_id(),
-        "native service manager capability is required for service-unhealthy",
-    )?;
-    let log_capability = require_reported_capability(
-        report,
-        log_capability_for_os(report.os)?,
-        "native service log capability is required for service-unhealthy",
-    )?;
-    let process_capability = require_reported_capability(
-        report,
-        process_capability_for_os(report.os)?,
-        "native process snapshot capability is required for service-unhealthy",
-    )?;
-    let socket_capability = require_reported_capability(
-        report,
-        socket_capability_for_os(report.os)?,
-        "native socket snapshot capability is required for service-unhealthy",
-    )?;
-    let storage_capability = require_reported_capability(
-        report,
-        "storage.df",
-        "filesystem snapshot capability is required for service-unhealthy",
-    )?;
-    let privilege_capability = require_reported_capability(
-        report,
-        privilege_capability_for_os(report.os)?,
-        "signed helper capability is required for service-unhealthy restart",
-    )?;
+    let capabilities = service_unhealthy_capabilities(report)?;
 
     let service_resource = service_resource_id(&request.node_id, &request.service);
     let log_resource = format!("system:node/{}/logs/{}", request.node_id, request.service);
@@ -981,22 +969,22 @@ pub fn plan_service_unhealthy_runbook(
     ]);
 
     let collect_status = Task::new("collect-service-status", OperationalLayer::System)
-        .with_capabilities([service_capability.clone()])
+        .with_capabilities([capabilities.service.clone()])
         .with_reads([service_resource.clone()]);
     let collect_logs = Task::new("collect-recent-logs", OperationalLayer::System)
-        .with_capabilities([log_capability.clone()])
+        .with_capabilities([capabilities.log.clone()])
         .with_reads([log_resource]);
     let collect_disk = Task::new("collect-disk-snapshot", OperationalLayer::System)
-        .with_capabilities([storage_capability])
+        .with_capabilities([capabilities.storage])
         .with_reads([filesystem_resource]);
     let collect_process = Task::new("collect-process-snapshot", OperationalLayer::System)
-        .with_capabilities([process_capability.clone()])
+        .with_capabilities([capabilities.process.clone()])
         .with_reads([process_resource]);
     let collect_socket = Task::new("collect-socket-snapshot", OperationalLayer::System)
-        .with_capabilities([socket_capability.clone()])
+        .with_capabilities([capabilities.socket.clone()])
         .with_reads([socket_resource]);
     let restart_service = Task::new("restart-service", OperationalLayer::System)
-        .with_capabilities([service_capability, privilege_capability.clone()])
+        .with_capabilities([capabilities.service, capabilities.privilege.clone()])
         .with_reads([service_resource.clone()])
         .with_writes([service_resource.clone()])
         .with_lease_requests([ResourceLeaseRequest::new(
@@ -1034,11 +1022,11 @@ pub fn plan_service_unhealthy_runbook(
     .with_verification(verification);
 
     Ok(ServiceUnhealthyRunbookPlan {
-        driver,
-        log_capability,
-        process_capability,
-        socket_capability,
-        privilege_capability,
+        driver: capabilities.driver,
+        log_capability: capabilities.log,
+        process_capability: capabilities.process,
+        socket_capability: capabilities.socket,
+        privilege_capability: capabilities.privilege,
         run,
     })
 }
@@ -1058,21 +1046,7 @@ pub fn plan_disk_pressure_runbook(
         });
     }
 
-    let storage_capability = require_disk_pressure_capability(
-        report,
-        "storage.df",
-        "filesystem snapshot capability is required for disk-pressure",
-    )?;
-    let log_capability = require_disk_pressure_capability(
-        report,
-        disk_pressure_log_capability_for_os(report.os)?,
-        "recent log capability is required for disk-pressure context",
-    )?;
-    let privilege_capability = require_disk_pressure_capability(
-        report,
-        disk_pressure_privilege_capability_for_os(report.os)?,
-        "signed helper capability is required for allowlisted cleanup",
-    )?;
+    let capabilities = disk_pressure_capabilities(report)?;
 
     let filesystem_resource = format!(
         "system:node/{}/filesystem/{}",
@@ -1109,22 +1083,22 @@ pub fn plan_disk_pressure_runbook(
     ]);
 
     let collect_disk = Task::new("collect-disk-usage", OperationalLayer::System)
-        .with_capabilities([storage_capability.clone()])
+        .with_capabilities([capabilities.storage.clone()])
         .with_reads([filesystem_resource.clone()]);
     let collect_candidate = Task::new("collect-cleanup-candidate", OperationalLayer::System)
-        .with_capabilities([storage_capability.clone()])
+        .with_capabilities([capabilities.storage.clone()])
         .with_reads([request.cleanup_resource_id.clone()]);
     let collect_logs = Task::new("collect-disk-pressure-logs", OperationalLayer::System)
-        .with_capabilities([log_capability.clone()])
+        .with_capabilities([capabilities.log.clone()])
         .with_reads([logs_resource]);
     let collect_snapshot = Task::new("collect-pre-action-snapshot", OperationalLayer::System)
-        .with_capabilities([storage_capability.clone()])
+        .with_capabilities([capabilities.storage.clone()])
         .with_reads([
             filesystem_resource.clone(),
             request.cleanup_resource_id.clone(),
         ]);
     let cleanup = Task::new("cleanup-allowlisted-path", OperationalLayer::System)
-        .with_capabilities([privilege_capability.clone()])
+        .with_capabilities([capabilities.privilege.clone()])
         .with_reads([request.cleanup_resource_id.clone()])
         .with_writes([request.cleanup_resource_id.clone()])
         .with_lease_requests([ResourceLeaseRequest::new(
@@ -1160,10 +1134,71 @@ pub fn plan_disk_pressure_runbook(
     .with_verification(verification);
 
     Ok(DiskPressureRunbookPlan {
-        storage_capability,
-        log_capability,
-        privilege_capability,
+        storage_capability: capabilities.storage,
+        log_capability: capabilities.log,
+        privilege_capability: capabilities.privilege,
         run,
+    })
+}
+
+fn service_unhealthy_capabilities(
+    report: &CapabilityReport,
+) -> Result<ServiceUnhealthyCapabilities, ServiceUnhealthyPlanError> {
+    let driver = service_manager_driver_for_os(report.os)?;
+    Ok(ServiceUnhealthyCapabilities {
+        driver,
+        service: require_reported_capability(
+            report,
+            driver.capability_id(),
+            "native service manager capability is required for service-unhealthy",
+        )?,
+        log: require_reported_capability(
+            report,
+            log_capability_for_os(report.os)?,
+            "native service log capability is required for service-unhealthy",
+        )?,
+        process: require_reported_capability(
+            report,
+            process_capability_for_os(report.os)?,
+            "native process snapshot capability is required for service-unhealthy",
+        )?,
+        socket: require_reported_capability(
+            report,
+            socket_capability_for_os(report.os)?,
+            "native socket snapshot capability is required for service-unhealthy",
+        )?,
+        storage: require_reported_capability(
+            report,
+            "storage.df",
+            "filesystem snapshot capability is required for service-unhealthy",
+        )?,
+        privilege: require_reported_capability(
+            report,
+            privilege_capability_for_os(report.os)?,
+            "signed helper capability is required for service-unhealthy restart",
+        )?,
+    })
+}
+
+fn disk_pressure_capabilities(
+    report: &CapabilityReport,
+) -> Result<DiskPressureCapabilities, DiskPressurePlanError> {
+    Ok(DiskPressureCapabilities {
+        storage: require_disk_pressure_capability(
+            report,
+            "storage.df",
+            "filesystem snapshot capability is required for disk-pressure",
+        )?,
+        log: require_disk_pressure_capability(
+            report,
+            disk_pressure_log_capability_for_os(report.os)?,
+            "recent log capability is required for disk-pressure context",
+        )?,
+        privilege: require_disk_pressure_capability(
+            report,
+            disk_pressure_privilege_capability_for_os(report.os)?,
+            "signed helper capability is required for allowlisted cleanup",
+        )?,
     })
 }
 
@@ -1356,14 +1391,14 @@ impl VerificationPlanner {
 
     /// Plans verification for a typed action and impact set.
     #[must_use]
-    pub fn plan(&self, action: &ActionKind, impact: &ImpactSet) -> VerificationPlan {
+    pub fn plan(self, action: &ActionKind, impact: &ImpactSet) -> VerificationPlan {
         match (impact.layer, action) {
             (
                 OperationalLayer::Application,
                 ActionKind::ServiceRestart | ActionKind::ServiceReload,
-            ) => self.plan_application_service_change(action, impact),
+            ) => Self::plan_application_service_change(action, impact),
             (OperationalLayer::System, ActionKind::RemoveAllowlistedFile) => {
-                self.plan_system_allowlisted_file_cleanup(impact)
+                Self::plan_system_allowlisted_file_cleanup(impact)
             }
             (OperationalLayer::Platform, ActionKind::ServiceReload) => {
                 self.plan_platform_reload(impact)
@@ -1371,7 +1406,7 @@ impl VerificationPlanner {
             (OperationalLayer::System, ActionKind::PackageUpdate) => {
                 self.plan_system_package_update(impact)
             }
-            (OperationalLayer::System, ActionKind::NodeReboot) => self.plan_system_reboot(impact),
+            (OperationalLayer::System, ActionKind::NodeReboot) => Self::plan_system_reboot(impact),
             (OperationalLayer::System, _)
                 if impact
                     .writes
@@ -1381,18 +1416,17 @@ impl VerificationPlanner {
                 self.plan_system_package_mutation(impact)
             }
             (_, ActionKind::ServiceRestart | ActionKind::ServiceReload) => {
-                self.plan_generic_service_change(action, impact)
+                Self::plan_generic_service_change(action, impact)
             }
-            _ => self.plan_generic_typed_action(impact),
+            _ => Self::plan_generic_typed_action(impact),
         }
     }
 
     fn plan_application_service_change(
-        &self,
         action: &ActionKind,
         impact: &ImpactSet,
     ) -> VerificationPlan {
-        let mut plan = self.plan_generic_service_change(action, impact);
+        let mut plan = Self::plan_generic_service_change(action, impact);
         plan.skipped.extend([
             SkippedVerification::new(
                 "package_audit",
@@ -1410,7 +1444,7 @@ impl VerificationPlanner {
         plan
     }
 
-    fn plan_platform_reload(&self, impact: &ImpactSet) -> VerificationPlan {
+    fn plan_platform_reload(self, impact: &ImpactSet) -> VerificationPlan {
         let mut required = vec![VerificationCheck::new(
             "config_syntax_valid",
             primary_resource(impact),
@@ -1439,11 +1473,11 @@ impl VerificationPlanner {
         }
     }
 
-    fn plan_system_package_mutation(&self, impact: &ImpactSet) -> VerificationPlan {
+    fn plan_system_package_mutation(self, impact: &ImpactSet) -> VerificationPlan {
         self.plan_system_package_update(impact)
     }
 
-    fn plan_system_package_update(&self, impact: &ImpactSet) -> VerificationPlan {
+    fn plan_system_package_update(self, impact: &ImpactSet) -> VerificationPlan {
         let package_resource = package_resource(impact);
         let affected_service_resource = affected_service_resource(impact);
         let reboot_resource = reboot_resource(impact);
@@ -1514,7 +1548,7 @@ impl VerificationPlanner {
         }
     }
 
-    fn plan_system_reboot(&self, impact: &ImpactSet) -> VerificationPlan {
+    fn plan_system_reboot(impact: &ImpactSet) -> VerificationPlan {
         let reboot_resource = reboot_resource(impact).unwrap_or_else(|| primary_resource(impact));
         let dependent_resource = dependent_resource(impact);
         VerificationPlan {
@@ -1548,7 +1582,7 @@ impl VerificationPlanner {
         }
     }
 
-    fn plan_system_allowlisted_file_cleanup(&self, impact: &ImpactSet) -> VerificationPlan {
+    fn plan_system_allowlisted_file_cleanup(impact: &ImpactSet) -> VerificationPlan {
         let cleanup_resource = primary_resource(impact);
         let filesystem_resource = dependent_resource(impact);
         VerificationPlan {
@@ -1579,11 +1613,7 @@ impl VerificationPlanner {
         }
     }
 
-    fn plan_generic_service_change(
-        &self,
-        action: &ActionKind,
-        impact: &ImpactSet,
-    ) -> VerificationPlan {
+    fn plan_generic_service_change(action: &ActionKind, impact: &ImpactSet) -> VerificationPlan {
         let direct_check = match action {
             ActionKind::ServiceReload => "service_reloaded",
             _ => "service_active",
@@ -1602,7 +1632,7 @@ impl VerificationPlanner {
         ])
     }
 
-    fn plan_generic_typed_action(&self, impact: &ImpactSet) -> VerificationPlan {
+    fn plan_generic_typed_action(impact: &ImpactSet) -> VerificationPlan {
         VerificationPlan::required([VerificationCheck::new(
             "helper_result_matches_request",
             primary_resource(impact),

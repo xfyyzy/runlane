@@ -759,9 +759,9 @@ mod tests {
     fn valid_config_and_identity_validate() {
         let fixture = Fixture::new("valid");
         let config = fixture.config();
-        fixture.write_public_file(&config.server_trust_root_path);
-        fixture.write_public_file(&config.certificate_path);
-        fixture.write_secret_file(&config.private_key_path);
+        Fixture::write_public_file(&config.server_trust_root_path);
+        Fixture::write_public_file(&config.certificate_path);
+        Fixture::write_secret_file(&config.private_key_path);
 
         init_config(&InitConfigOptions {
             config_path: fixture.config_path.clone(),
@@ -796,9 +796,9 @@ mod tests {
     fn mismatched_node_identity_fails_closed() {
         let fixture = Fixture::new("mismatch");
         let config = fixture.config();
-        fixture.write_public_file(&config.server_trust_root_path);
-        fixture.write_public_file(&config.certificate_path);
-        fixture.write_secret_file(&config.private_key_path);
+        Fixture::write_public_file(&config.server_trust_root_path);
+        Fixture::write_public_file(&config.certificate_path);
+        Fixture::write_secret_file(&config.private_key_path);
 
         init_config(&InitConfigOptions {
             config_path: fixture.config_path.clone(),
@@ -809,7 +809,7 @@ mod tests {
         let mut identity = AgentIdentityMetadata::from_config(&config, "sha256:demo", 100, None)
             .expect("identity shape ok");
         identity.node_id = "other-node".to_owned();
-        fixture.write_identity(&config.identity_path, &identity);
+        Fixture::write_identity(&config.identity_path, &identity);
 
         let err = validate_agent_state(&fixture.config_path, OperatingSystem::Linux)
             .expect_err("mismatched identity must fail");
@@ -826,9 +826,9 @@ mod tests {
     fn bad_identity_permissions_fail_closed() {
         let fixture = Fixture::new("bad-perms");
         let config = fixture.config();
-        fixture.write_public_file(&config.server_trust_root_path);
-        fixture.write_public_file(&config.certificate_path);
-        fixture.write_secret_file(&config.private_key_path);
+        Fixture::write_public_file(&config.server_trust_root_path);
+        Fixture::write_public_file(&config.certificate_path);
+        Fixture::write_secret_file(&config.private_key_path);
 
         init_config(&InitConfigOptions {
             config_path: fixture.config_path.clone(),
@@ -838,7 +838,7 @@ mod tests {
         .expect("config init succeeds");
         let identity = AgentIdentityMetadata::from_config(&config, "sha256:demo", 100, None)
             .expect("identity shape ok");
-        fixture.write_identity(&config.identity_path, &identity);
+        Fixture::write_identity(&config.identity_path, &identity);
         #[cfg(unix)]
         fs::set_permissions(&config.identity_path, fs::Permissions::from_mode(0o644))
             .expect("set bad permissions");
@@ -892,21 +892,21 @@ mod tests {
             )
         }
 
-        fn write_public_file(&self, path: &Path) {
+        fn write_public_file(path: &Path) {
             fs::write(path, "fixture\n").expect("write public file");
             #[cfg(unix)]
             fs::set_permissions(path, fs::Permissions::from_mode(0o644))
                 .expect("set public permissions");
         }
 
-        fn write_secret_file(&self, path: &Path) {
+        fn write_secret_file(path: &Path) {
             fs::write(path, "secret\n").expect("write secret file");
             #[cfg(unix)]
             fs::set_permissions(path, fs::Permissions::from_mode(0o600))
                 .expect("set secret permissions");
         }
 
-        fn write_identity(&self, path: &Path, identity: &AgentIdentityMetadata) {
+        fn write_identity(path: &Path, identity: &AgentIdentityMetadata) {
             let body = format!(
                 "node_id: {}\nplatform_family: {}\ncertificate_fingerprint: {}\nserver_trust_root_path: {}\ncertificate_path: {}\nprivate_key_path: {}\nenrolled_at_unix_seconds: {}\nexpires_at_unix_seconds: null\n",
                 identity.node_id,

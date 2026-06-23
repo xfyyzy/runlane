@@ -14,14 +14,15 @@ use runlane_core::{
 };
 
 fn main() {
-    if let Err(error) = run(env::args().skip(1).collect()) {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    if let Err(error) = run(&args) {
         eprintln!("{error}");
         process::exit(1);
     }
 }
 
-fn run(args: Vec<String>) -> Result<(), String> {
-    match args.as_slice() {
+fn run(args: &[String]) -> Result<(), String> {
+    match args {
         [] => {
             print_help();
             Ok(())
@@ -42,70 +43,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             print_fleet_summary("server gitops sync ok", &repository);
             Ok(())
         }
-        [approval, list] if approval == "approval" && list == "list" => {
-            let store = demo_approval_store();
-            for record in store.list_pending() {
-                println!(
-                    "{} {} {:?} {} expires_at={}",
-                    record.id,
-                    record.action_id,
-                    record.action,
-                    record.target.resource_id,
-                    record.expires_at_unix_seconds
-                );
-            }
-            Ok(())
-        }
-        [approval, show, id] if approval == "approval" && show == "show" => {
-            let store = demo_approval_store();
-            let record = store
-                .show(id)
-                .ok_or_else(|| format!("unknown approval: {id}"))?;
-            println!(
-                "id: {}\nrun: {}\nproposal: {}\naction: {}\nlayer: {:?}\ntarget: {}\nlease: {:?}\nrequired_checks: {}\nskipped_checks: {}",
-                record.id,
-                record.run_id,
-                record.proposal_id,
-                record.action_id,
-                record.layer,
-                record.target.resource_id,
-                record.lease_request.mode,
-                record.verification.required.len(),
-                record.verification.skipped.len()
-            );
-            Ok(())
-        }
-        [approval, approve, id] if approval == "approval" && approve == "approve" => {
-            let mut store = demo_approval_store();
-            let action_id = store
-                .show(id)
-                .ok_or_else(|| format!("unknown approval: {id}"))?
-                .action_id
-                .clone();
-            let claims = store
-                .approve(
-                    id,
-                    &action_id,
-                    "cli-operator",
-                    150,
-                    "allow-prod-web-sshd-restart",
-                    "cli-lease-nonce",
-                )
-                .map_err(|error| format!("approval failed: {error:?}"))?;
-            println!(
-                "approved: {}\nlease_id: {}\naction: {:?}\ntarget: {}",
-                id, claims.lease_id, claims.action, claims.target.resource_id
-            );
-            Ok(())
-        }
-        [approval, reject, id] if approval == "approval" && reject == "reject" => {
-            let mut store = demo_approval_store();
-            store
-                .reject(id, "cli-operator", 150)
-                .map_err(|error| format!("rejection failed: {error:?}"))?;
-            println!("rejected: {id}");
-            Ok(())
-        }
+        [approval, rest @ ..] if approval == "approval" => run_approval_command(rest),
         [telegram, approval, smoke]
             if telegram == "telegram"
                 && approval == "approval"
@@ -113,60 +51,160 @@ fn run(args: Vec<String>) -> Result<(), String> {
         {
             run_telegram_approval_live_simulated_smoke()
         }
-        [demo, service, path] if demo == "demo" && service == "service-unhealthy" => {
-            let simulation =
-                run_service_unhealthy_simulation(path).map_err(|error| error.to_string())?;
-            println!("run: {}", simulation.run_id);
-            println!(
-                "stages: {}",
-                simulation
-                    .stages
-                    .iter()
-                    .map(|stage| format!("{stage:?}"))
-                    .collect::<Vec<_>>()
-                    .join(" -> ")
-            );
-            println!("{}", simulation.receipt.render_text());
-            Ok(())
-        }
-        [demo, scenario, path] if demo == "demo" && scenario == "disk-pressure" => {
-            let simulation =
-                run_disk_pressure_simulation(path).map_err(|error| error.to_string())?;
-            println!("run: {}", simulation.run_id);
-            println!(
-                "stages: {}",
-                simulation
-                    .stages
-                    .iter()
-                    .map(|stage| format!("{stage:?}"))
-                    .collect::<Vec<_>>()
-                    .join(" -> ")
-            );
-            println!("{}", simulation.receipt.render_text());
-            Ok(())
-        }
-        [receipt, show, id, path] if receipt == "receipt" && show == "show" => {
-            if id == "run-demo-service-unhealthy" {
-                let simulation =
-                    run_service_unhealthy_simulation(path).map_err(|error| error.to_string())?;
-                println!("{}", simulation.receipt.render_text());
-                return Ok(());
-            }
-            if id == "run-demo-disk-pressure" {
-                let simulation =
-                    run_disk_pressure_simulation(path).map_err(|error| error.to_string())?;
-                println!("{}", simulation.receipt.render_text());
-                return Ok(());
-            }
-            let state = LocalServerState::open(path);
-            let receipt = state.render_receipt(id).map_err(|error| {
-                format!("unknown receipt or unreadable state for {id}: {error}")
-            })?;
-            println!("{}", receipt.render_text());
-            Ok(())
-        }
+        [demo, rest @ ..] if demo == "demo" => run_demo_command(rest),
+        [receipt, rest @ ..] if receipt == "receipt" => run_receipt_command(rest),
         _ => Err(format!("unsupported runlane command: {}", args.join(" "))),
     }
+}
+
+fn run_approval_command(args: &[String]) -> Result<(), String> {
+    match args {
+        [list] if list == "list" => {
+            list_approvals();
+            Ok(())
+        }
+        [show, id] if show == "show" => show_approval(id),
+        [approve, id] if approve == "approve" => approve_demo(id),
+        [reject, id] if reject == "reject" => reject_demo(id),
+        _ => Err(format!("unsupported approval command: {}", args.join(" "))),
+    }
+}
+
+fn list_approvals() {
+    let store = demo_approval_store();
+    for record in store.list_pending() {
+        println!(
+            "{} {} {:?} {} expires_at={}",
+            record.id,
+            record.action_id,
+            record.action,
+            record.target.resource_id,
+            record.expires_at_unix_seconds
+        );
+    }
+}
+
+fn show_approval(id: &str) -> Result<(), String> {
+    let store = demo_approval_store();
+    let record = store
+        .show(id)
+        .ok_or_else(|| format!("unknown approval: {id}"))?;
+    println!(
+        "id: {}\nrun: {}\nproposal: {}\naction: {}\nlayer: {:?}\ntarget: {}\nlease: {:?}\nrequired_checks: {}\nskipped_checks: {}",
+        record.id,
+        record.run_id,
+        record.proposal_id,
+        record.action_id,
+        record.layer,
+        record.target.resource_id,
+        record.lease_request.mode,
+        record.verification.required.len(),
+        record.verification.skipped.len()
+    );
+    Ok(())
+}
+
+fn approve_demo(id: &str) -> Result<(), String> {
+    let mut store = demo_approval_store();
+    let action_id = store
+        .show(id)
+        .ok_or_else(|| format!("unknown approval: {id}"))?
+        .action_id
+        .clone();
+    let claims = store
+        .approve(
+            id,
+            &action_id,
+            "cli-operator",
+            150,
+            "allow-prod-web-sshd-restart",
+            "cli-lease-nonce",
+        )
+        .map_err(|error| format!("approval failed: {error:?}"))?;
+    println!(
+        "approved: {}\nlease_id: {}\naction: {:?}\ntarget: {}",
+        id, claims.lease_id, claims.action, claims.target.resource_id
+    );
+    Ok(())
+}
+
+fn reject_demo(id: &str) -> Result<(), String> {
+    let mut store = demo_approval_store();
+    store
+        .reject(id, "cli-operator", 150)
+        .map_err(|error| format!("rejection failed: {error:?}"))?;
+    println!("rejected: {id}");
+    Ok(())
+}
+
+fn run_demo_command(args: &[String]) -> Result<(), String> {
+    match args {
+        [service, path] if service == "service-unhealthy" => {
+            print_service_unhealthy_simulation(path)
+        }
+        [scenario, path] if scenario == "disk-pressure" => print_disk_pressure_simulation(path),
+        _ => Err(format!("unsupported demo command: {}", args.join(" "))),
+    }
+}
+
+fn print_service_unhealthy_simulation(path: &str) -> Result<(), String> {
+    let simulation = run_service_unhealthy_simulation(path).map_err(|error| error.to_string())?;
+    print_simulation(
+        &simulation.run_id,
+        &simulation.stages,
+        &simulation.receipt.render_text(),
+    );
+    Ok(())
+}
+
+fn print_disk_pressure_simulation(path: &str) -> Result<(), String> {
+    let simulation = run_disk_pressure_simulation(path).map_err(|error| error.to_string())?;
+    print_simulation(
+        &simulation.run_id,
+        &simulation.stages,
+        &simulation.receipt.render_text(),
+    );
+    Ok(())
+}
+
+fn print_simulation(run_id: &str, stages: &[runlane_core::e2e::JourneyStage], receipt: &str) {
+    println!("run: {run_id}");
+    println!(
+        "stages: {}",
+        stages
+            .iter()
+            .map(|stage| format!("{stage:?}"))
+            .collect::<Vec<_>>()
+            .join(" -> ")
+    );
+    println!("{receipt}");
+}
+
+fn run_receipt_command(args: &[String]) -> Result<(), String> {
+    match args {
+        [show, id, path] if show == "show" => show_receipt(id, path),
+        _ => Err(format!("unsupported receipt command: {}", args.join(" "))),
+    }
+}
+
+fn show_receipt(id: &str, path: &str) -> Result<(), String> {
+    if id == "run-demo-service-unhealthy" {
+        let simulation =
+            run_service_unhealthy_simulation(path).map_err(|error| error.to_string())?;
+        println!("{}", simulation.receipt.render_text());
+        return Ok(());
+    }
+    if id == "run-demo-disk-pressure" {
+        let simulation = run_disk_pressure_simulation(path).map_err(|error| error.to_string())?;
+        println!("{}", simulation.receipt.render_text());
+        return Ok(());
+    }
+    let state = LocalServerState::open(path);
+    let receipt = state
+        .render_receipt(id)
+        .map_err(|error| format!("unknown receipt or unreadable state for {id}: {error}"))?;
+    println!("{}", receipt.render_text());
+    Ok(())
 }
 
 fn print_help() {
@@ -190,24 +228,15 @@ fn print_fleet_summary(prefix: &str, repository: &FleetRepository) {
 }
 
 fn run_telegram_approval_live_simulated_smoke() -> Result<(), String> {
-    let chat_id = env_i64("RUNLANE_TELEGRAM_SMOKE_CHAT_ID", 42)?;
-    let user_id = env_i64("RUNLANE_TELEGRAM_SMOKE_USER_ID", 1001)?;
-    let unknown_user_id = env_i64(
-        "RUNLANE_TELEGRAM_SMOKE_UNKNOWN_USER_ID",
-        user_id
-            .checked_add(1)
-            .ok_or_else(|| "RUNLANE_TELEGRAM_SMOKE_USER_ID is too large".to_owned())?,
-    )?;
-    let username = env::var("RUNLANE_TELEGRAM_SMOKE_USERNAME").ok();
-    let actor = env::var("RUNLANE_TELEGRAM_SMOKE_ACTOR")
-        .unwrap_or_else(|_| "telegram:smoke-operator".to_owned());
-
+    let input = TelegramSmokeInput::load()?;
     let adapter =
         TelegramApprovalAdapter::new(TelegramIdentityMap::new([TelegramAuthorizedActor::new(
-            chat_id, user_id, actor,
+            input.chat_id,
+            input.user_id,
+            input.actor,
         )]));
-    let identity = TelegramIdentity::new(chat_id, user_id, username);
-    let unknown_identity = TelegramIdentity::new(chat_id, unknown_user_id, None);
+    let identity = TelegramIdentity::new(input.chat_id, input.user_id, input.username);
+    let unknown_identity = TelegramIdentity::new(input.chat_id, input.unknown_user_id, None);
     let context = TelegramApprovalContext::new(
         150,
         "allow-prod-web-sshd-restart",
@@ -218,13 +247,57 @@ fn run_telegram_approval_live_simulated_smoke() -> Result<(), String> {
     println!("secrets: not-read");
     println!("identity: redacted");
 
+    smoke_list_and_show_approval(&adapter, &identity, &context)?;
+    smoke_approve_approval(&adapter, &identity, &context)?;
+    smoke_reject_approval(&adapter, &identity, &context)?;
+    smoke_unknown_identity(&adapter, &unknown_identity, &context)?;
+    println!("telegram approval live-simulated smoke ok");
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TelegramSmokeInput {
+    chat_id: i64,
+    user_id: i64,
+    unknown_user_id: i64,
+    username: Option<String>,
+    actor: String,
+}
+
+impl TelegramSmokeInput {
+    fn load() -> Result<Self, String> {
+        let chat_id = env_i64("RUNLANE_TELEGRAM_SMOKE_CHAT_ID", 42)?;
+        let user_id = env_i64("RUNLANE_TELEGRAM_SMOKE_USER_ID", 1001)?;
+        let unknown_user_id = env_i64(
+            "RUNLANE_TELEGRAM_SMOKE_UNKNOWN_USER_ID",
+            user_id
+                .checked_add(1)
+                .ok_or_else(|| "RUNLANE_TELEGRAM_SMOKE_USER_ID is too large".to_owned())?,
+        )?;
+        Ok(Self {
+            chat_id,
+            user_id,
+            unknown_user_id,
+            username: env::var("RUNLANE_TELEGRAM_SMOKE_USERNAME").ok(),
+            actor: env::var("RUNLANE_TELEGRAM_SMOKE_ACTOR")
+                .unwrap_or_else(|_| "telegram:smoke-operator".to_owned()),
+        })
+    }
+}
+
+fn smoke_list_and_show_approval(
+    adapter: &TelegramApprovalAdapter,
+    identity: &TelegramIdentity,
+    context: &TelegramApprovalContext,
+) -> Result<(), String> {
     let mut list_store = demo_approval_store();
     let listed = adapter
         .handle_command(
             &mut list_store,
-            &identity,
+            identity,
             TelegramApprovalCommand::parse("/approvals").map_err(|error| format!("{error:?}"))?,
-            &context,
+            context,
         )
         .map_err(|error| format!("list failed: {error:?}"))?;
     let pending_count = match listed {
@@ -236,10 +309,10 @@ fn run_telegram_approval_live_simulated_smoke() -> Result<(), String> {
     let shown = adapter
         .handle_command(
             &mut list_store,
-            &identity,
+            identity,
             TelegramApprovalCommand::parse("/approval show approval-demo-1")
                 .map_err(|error| format!("{error:?}"))?,
-            &context,
+            context,
         )
         .map_err(|error| format!("show failed: {error:?}"))?;
     match shown {
@@ -249,15 +322,22 @@ fn run_telegram_approval_live_simulated_smoke() -> Result<(), String> {
         ),
         other => return Err(format!("show returned unexpected response: {other:?}")),
     }
+    Ok(())
+}
 
+fn smoke_approve_approval(
+    adapter: &TelegramApprovalAdapter,
+    identity: &TelegramIdentity,
+    context: &TelegramApprovalContext,
+) -> Result<(), String> {
     let mut approve_store = demo_approval_store();
     let approved = adapter
         .handle_command(
             &mut approve_store,
-            &identity,
+            identity,
             TelegramApprovalCommand::parse("/approve approval-demo-1")
                 .map_err(|error| format!("{error:?}"))?,
-            &context,
+            context,
         )
         .map_err(|error| format!("approve failed: {error:?}"))?;
     match approved {
@@ -273,15 +353,22 @@ fn run_telegram_approval_live_simulated_smoke() -> Result<(), String> {
         ),
         other => return Err(format!("approve returned unexpected response: {other:?}")),
     }
+    Ok(())
+}
 
+fn smoke_reject_approval(
+    adapter: &TelegramApprovalAdapter,
+    identity: &TelegramIdentity,
+    context: &TelegramApprovalContext,
+) -> Result<(), String> {
     let mut reject_store = demo_approval_store();
     let rejected = adapter
         .handle_command(
             &mut reject_store,
-            &identity,
+            identity,
             TelegramApprovalCommand::parse("/reject approval-demo-1")
                 .map_err(|error| format!("{error:?}"))?,
-            &context,
+            context,
         )
         .map_err(|error| format!("reject failed: {error:?}"))?;
     match rejected {
@@ -292,14 +379,21 @@ fn run_telegram_approval_live_simulated_smoke() -> Result<(), String> {
         ),
         other => return Err(format!("reject returned unexpected response: {other:?}")),
     }
+    Ok(())
+}
 
+fn smoke_unknown_identity(
+    adapter: &TelegramApprovalAdapter,
+    unknown_identity: &TelegramIdentity,
+    context: &TelegramApprovalContext,
+) -> Result<(), String> {
     let mut unknown_store = demo_approval_store();
     let unauthorized = adapter
         .handle_command(
             &mut unknown_store,
-            &unknown_identity,
+            unknown_identity,
             TelegramApprovalCommand::List,
-            &context,
+            context,
         )
         .expect_err("unknown identity should fail closed");
     if !matches!(
@@ -320,8 +414,6 @@ fn run_telegram_approval_live_simulated_smoke() -> Result<(), String> {
         ));
     }
     println!("unknown_identity: rejected pending={still_pending} audit={audited}");
-    println!("telegram approval live-simulated smoke ok");
-
     Ok(())
 }
 

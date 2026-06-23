@@ -21,7 +21,7 @@ Current GitHub branch protection requires these checks before merging to
 
 | Check | Source | What it proves |
 |---|---|---|
-| `rust` | `.github/workflows/ci.yml` on Ubuntu | `cargo fmt --all -- --check`, `cargo check --workspace`, and `cargo test --workspace` pass on the current stable Rust toolchain available to the workflow. |
+| `rust` | `.github/workflows/ci.yml` on Ubuntu | `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` pass on the current stable Rust toolchain available to the workflow. |
 | `pr-policy` | `.github/workflows/pr-policy.yml` | PR body links an issue, contains required sections, and has at least one checked self-review item. |
 
 Current CI does **not** build release artifacts, run Linux musl cross builds,
@@ -34,6 +34,7 @@ Run these before opening a PR unless a preflight failure blocks them:
 ```bash
 cargo fmt --all -- --check
 cargo check --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
@@ -93,7 +94,7 @@ In PRs and issue comments, prefer this shape:
 Verification:
 - CI rust: passed, <Actions URL>
 - CI pr-policy: passed, <Actions URL>
-- Local: cargo fmt --all -- --check, cargo check --workspace, cargo test --workspace
+- Local: cargo fmt --all -- --check, cargo check --workspace, cargo clippy --workspace --all-targets -- -D warnings, cargo test --workspace
 - Cross/VM: not run; docs-only change did not touch platform runtime or release artifacts
 ```
 

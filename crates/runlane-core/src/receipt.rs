@@ -61,147 +61,185 @@ pub enum ReceiptError {
     MissingEvent(&'static str),
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ReceiptParts {
+    incident_id: Option<String>,
+    node_id: Option<String>,
+    evidence_references: Vec<String>,
+    proposal_id: Option<String>,
+    hypothesis: Option<String>,
+    approval_id: Option<String>,
+    lease_id: Option<String>,
+    changed_resources: Vec<String>,
+    helper_action: Option<ActionKind>,
+    helper_status: Option<HelperActionStatus>,
+    verification_checks: Vec<VerificationCheck>,
+    verification_completed: Vec<String>,
+    skipped_checks: Vec<SkippedVerification>,
+}
+
 /// Generates a receipt from audit ledger events.
 pub fn generate_operator_receipt(
     run_id: &str,
     ledger: &AuditLedger,
 ) -> Result<OperatorReceipt, ReceiptError> {
-    let mut incident_id = None;
-    let mut node_id = None;
-    let mut evidence_references = Vec::new();
-    let mut proposal_id = None;
-    let mut hypothesis = None;
-    let mut approval_id = None;
-    let mut lease_id = None;
-    let mut changed_resources = Vec::new();
-    let mut helper_action = None;
-    let mut helper_status = None;
-    let mut verification_checks = Vec::new();
-    let mut verification_completed = Vec::new();
-    let mut skipped_checks = Vec::new();
+    collect_receipt_parts(run_id, ledger).finalize(run_id)
+}
 
+fn collect_receipt_parts(run_id: &str, ledger: &AuditLedger) -> ReceiptParts {
+    let mut parts = ReceiptParts::default();
     for event in ledger
         .events()
         .iter()
         .filter(|event| event.run_id == run_id)
     {
-        match &event.kind {
+        parts.apply(&event.kind);
+    }
+    parts
+}
+
+impl ReceiptParts {
+    fn apply(&mut self, kind: &AuditEventKind) {
+        match kind {
             AuditEventKind::IncidentCreated {
                 incident_id: id,
                 node_id: node,
                 ..
             } => {
-                incident_id = Some(id.clone());
-                node_id = Some(node.clone());
+                self.incident_id = Some(id.clone());
+                self.node_id = Some(node.clone());
             }
             AuditEventKind::EvidenceCollected { source } => {
-                evidence_references.push(source.clone());
+                self.evidence_references.push(source.clone());
             }
             AuditEventKind::ProposalGenerated {
                 proposal_id: id,
                 hypothesis: text,
             } => {
-                proposal_id = Some(id.clone());
-                hypothesis = Some(text.clone());
+                self.proposal_id = Some(id.clone());
+                self.hypothesis = Some(text.clone());
             }
             AuditEventKind::ApprovalDecision {
                 approval_id: id,
                 outcome: crate::ApprovalOutcome::Approved,
                 ..
             } => {
-                approval_id = Some(id.clone());
+                self.approval_id = Some(id.clone());
             }
             AuditEventKind::CapabilityLeaseIssued {
                 lease_id: id,
                 approval_id: approved,
             } => {
-                lease_id = Some(id.clone());
-                approval_id.get_or_insert_with(|| approved.clone());
+                self.lease_id = Some(id.clone());
+                self.approval_id.get_or_insert_with(|| approved.clone());
             }
             AuditEventKind::ResourceLeaseGranted { resource_id, .. } => {
-                changed_resources.push(resource_id.clone());
+                self.changed_resources.push(resource_id.clone());
             }
             AuditEventKind::ActionResult {
                 action,
                 status,
                 target,
             } => {
-                helper_action = Some(action.clone());
-                helper_status = Some(*status);
-                changed_resources.push(target.resource_id.clone());
+                self.helper_action = Some(action.clone());
+                self.helper_status = Some(*status);
+                self.changed_resources.push(target.resource_id.clone());
             }
             AuditEventKind::VerificationSelected { plan } => {
-                verification_checks.extend(plan.required.clone());
-                skipped_checks.extend(plan.skipped.clone());
+                self.verification_checks.extend(plan.required.clone());
+                self.skipped_checks.extend(plan.skipped.clone());
             }
             AuditEventKind::VerificationCompleted {
                 check_id,
                 resource_id,
             } => {
-                verification_completed.push(format!("{check_id}:{resource_id}"));
+                self.verification_completed
+                    .push(format!("{check_id}:{resource_id}"));
             }
             AuditEventKind::VerificationSkipped { skipped } => {
-                skipped_checks.push(skipped.clone());
+                self.skipped_checks.push(skipped.clone());
             }
             _ => {}
         }
     }
 
-    let incident_id = incident_id.ok_or(ReceiptError::MissingEvent("incident_created"))?;
-    let node_id = node_id.ok_or(ReceiptError::MissingEvent("incident_node"))?;
-    if evidence_references.is_empty() {
-        return Err(ReceiptError::MissingEvent("evidence_collected"));
-    }
-    let proposal_id = proposal_id.ok_or(ReceiptError::MissingEvent("proposal_generated"))?;
-    let hypothesis = hypothesis.ok_or(ReceiptError::MissingEvent("proposal_hypothesis"))?;
-    let approval_id = approval_id.ok_or(ReceiptError::MissingEvent("approval_approved"))?;
-    let lease_id = lease_id.ok_or(ReceiptError::MissingEvent("capability_lease_issued"))?;
-    let helper_action = helper_action.ok_or(ReceiptError::MissingEvent("helper_action_result"))?;
-    let helper_status = helper_status.ok_or(ReceiptError::MissingEvent("helper_action_status"))?;
-    if verification_checks.is_empty() {
-        return Err(ReceiptError::MissingEvent("verification_selected"));
-    }
-    if verification_completed.is_empty() {
-        return Err(ReceiptError::MissingEvent("verification_completed"));
-    }
-
-    changed_resources.sort();
-    changed_resources.dedup();
-    skipped_checks.sort_by(|left, right| left.check_id.cmp(&right.check_id));
-    skipped_checks.dedup_by(|left, right| left.check_id == right.check_id);
-
-    let residual_risk = match helper_action {
-        ActionKind::RemoveAllowlistedFile => {
-            "disk pressure may recur until the growth source is fixed; cleanup was limited to the allowlist"
+    fn finalize(mut self, run_id: &str) -> Result<OperatorReceipt, ReceiptError> {
+        let incident_id = self
+            .incident_id
+            .ok_or(ReceiptError::MissingEvent("incident_created"))?;
+        let node_id = self
+            .node_id
+            .ok_or(ReceiptError::MissingEvent("incident_node"))?;
+        if self.evidence_references.is_empty() {
+            return Err(ReceiptError::MissingEvent("evidence_collected"));
         }
-        _ => "root cause still requires operator review if service fails again",
-    };
-    let takeover_notes = match helper_action {
-        ActionKind::RemoveAllowlistedFile => {
-            "operator can inspect disk evidence, cleanup allowlist, and verification before broader cleanup"
+        let proposal_id = self
+            .proposal_id
+            .ok_or(ReceiptError::MissingEvent("proposal_generated"))?;
+        let hypothesis = self
+            .hypothesis
+            .ok_or(ReceiptError::MissingEvent("proposal_hypothesis"))?;
+        let approval_id = self
+            .approval_id
+            .ok_or(ReceiptError::MissingEvent("approval_approved"))?;
+        let lease_id = self
+            .lease_id
+            .ok_or(ReceiptError::MissingEvent("capability_lease_issued"))?;
+        let helper_action = self
+            .helper_action
+            .ok_or(ReceiptError::MissingEvent("helper_action_result"))?;
+        let helper_status = self
+            .helper_status
+            .ok_or(ReceiptError::MissingEvent("helper_action_status"))?;
+        if self.verification_checks.is_empty() {
+            return Err(ReceiptError::MissingEvent("verification_selected"));
         }
-        _ => "operator can inspect collected evidence and rerun verification",
-    };
+        if self.verification_completed.is_empty() {
+            return Err(ReceiptError::MissingEvent("verification_completed"));
+        }
 
-    Ok(OperatorReceipt {
-        run_id: run_id.to_owned(),
-        incident_id,
-        node_id,
-        layer: OperationalLayer::System,
-        changed_resources,
-        evidence_references,
-        proposal_id,
-        hypothesis,
-        approval_id,
-        lease_id,
-        helper_action,
-        helper_status,
-        verification_checks,
-        verification_completed,
-        skipped_checks,
-        residual_risk: residual_risk.to_owned(),
-        takeover_notes: takeover_notes.to_owned(),
-    })
+        self.changed_resources.sort();
+        self.changed_resources.dedup();
+        self.skipped_checks
+            .sort_by(|left, right| left.check_id.cmp(&right.check_id));
+        self.skipped_checks
+            .dedup_by(|left, right| left.check_id == right.check_id);
+
+        let (residual_risk, takeover_notes) = receipt_operator_notes(&helper_action);
+
+        Ok(OperatorReceipt {
+            run_id: run_id.to_owned(),
+            incident_id,
+            node_id,
+            layer: OperationalLayer::System,
+            changed_resources: self.changed_resources,
+            evidence_references: self.evidence_references,
+            proposal_id,
+            hypothesis,
+            approval_id,
+            lease_id,
+            helper_action,
+            helper_status,
+            verification_checks: self.verification_checks,
+            verification_completed: self.verification_completed,
+            skipped_checks: self.skipped_checks,
+            residual_risk: residual_risk.to_owned(),
+            takeover_notes: takeover_notes.to_owned(),
+        })
+    }
+}
+
+fn receipt_operator_notes(helper_action: &ActionKind) -> (&'static str, &'static str) {
+    match helper_action {
+        ActionKind::RemoveAllowlistedFile => (
+            "disk pressure may recur until the growth source is fixed; cleanup was limited to the allowlist",
+            "operator can inspect disk evidence, cleanup allowlist, and verification before broader cleanup",
+        ),
+        _ => (
+            "root cause still requires operator review if service fails again",
+            "operator can inspect collected evidence and rerun verification",
+        ),
+    }
 }
 
 #[cfg(test)]

@@ -412,7 +412,7 @@ fn find_runtime_key(value: &Value) -> Option<String> {
 
 fn parse_inventory(path: &Path, body: &str) -> Result<FleetInventoryNode, FleetLoadError> {
     let raw = parse_yaml::<RawInventoryNode>(path, body)?;
-    let layers = parse_layers(path, raw.layers)?;
+    let layers = parse_layers(path, &raw.layers)?;
     validate_capabilities(path, &raw.capabilities.requested)?;
     Ok(FleetInventoryNode {
         id: raw.id,
@@ -540,7 +540,7 @@ fn parse_yaml<T: for<'de> Deserialize<'de>>(path: &Path, body: &str) -> Result<T
     })
 }
 
-fn parse_layers(path: &Path, raw: RawLayers) -> Result<FleetLayers, FleetLoadError> {
+fn parse_layers(path: &Path, raw: &RawLayers) -> Result<FleetLayers, FleetLoadError> {
     let primary = parse_layer(path, &raw.primary)?;
     let supports = raw
         .supports
@@ -727,7 +727,7 @@ mod tests {
     fn parses_inventory_and_runbook_documents() {
         let inventory = parse_inventory(
             Path::new("inventory.yaml"),
-            r#"
+            r"
 id: prod-web-01
 hostname: prod-web-01.example.internal
 os: linux
@@ -740,7 +740,7 @@ capabilities:
   requested: [os.linux, service.systemd, logs.journald, process.procfs, socket.ss, storage.df, privilege.sudo-helper]
 policy:
   profile: production
-"#,
+",
         )
         .expect("inventory parses");
         assert_eq!(inventory.os, OperatingSystem::Linux);
@@ -776,11 +776,11 @@ analyze:
     #[test]
     fn rejects_runtime_truth_fields() {
         let value = serde_yaml::from_str::<Value>(
-            r#"
+            r"
 id: bad
 evidence:
   source: command-output
-"#,
+",
         )
         .expect("test yaml parses");
         assert_eq!(find_runtime_key(&value), Some("evidence".to_owned()));
@@ -790,7 +790,7 @@ evidence:
     fn rejects_invalid_layer_capability_and_resource() {
         let bad_layer = parse_inventory(
             Path::new("bad.yaml"),
-            r#"
+            r"
 id: bad
 hostname: bad
 os: linux
@@ -801,13 +801,13 @@ capabilities:
   requested: [os.linux]
 policy:
   profile: production
-"#,
+",
         );
         assert!(bad_layer.is_err());
 
         let bad_capability = parse_runbook(
             Path::new("bad.yaml"),
-            r#"
+            r"
 name: service-unhealthy
 version: 0.1.0
 layer: system
@@ -819,13 +819,13 @@ collect:
 analyze:
   mode: structured_proposal
   allowed_actions: [service.restart]
-"#,
+",
         );
         assert!(bad_capability.is_err());
 
         let bad_resource = parse_runbook(
             Path::new("bad.yaml"),
-            r#"
+            r"
 name: service-unhealthy
 version: 0.1.0
 layer: system
@@ -837,7 +837,7 @@ collect:
 analyze:
   mode: structured_proposal
   allowed_actions: [service.restart]
-"#,
+",
         );
         assert!(bad_resource.is_err());
     }
@@ -846,12 +846,12 @@ analyze:
     fn parses_overlay_precedence_documents() {
         let overlay = parse_overlay(
             Path::new("node.yaml"),
-            r#"
+            r"
 tier: node
 name: prod-web-01
 settings:
   policy.profile: node-production
-"#,
+",
         )
         .expect("overlay parses");
         assert_eq!(
@@ -875,7 +875,7 @@ settings:
         }
         fs::write(
             root.join("inventory/prod-web-01.yaml"),
-            r#"
+            r"
 id: prod-web-01
 hostname: prod-web-01.example.internal
 os: linux
@@ -888,12 +888,12 @@ capabilities:
   requested: [os.linux, service.systemd, logs.journald, process.procfs, socket.ss, storage.df, privilege.sudo-helper]
 policy:
   profile: production
-"#,
+",
         )
         .expect("inventory fixture written");
         fs::write(
             root.join("roles/web.yaml"),
-            r#"
+            r"
 id: web
 layers:
   primary: system
@@ -903,7 +903,7 @@ policies:
   profile: production
 allowlists:
   enabled: [allow-sshd-restart]
-"#,
+",
         )
         .expect("role fixture written");
         fs::write(
@@ -926,30 +926,30 @@ analyze:
         .expect("runbook fixture written");
         fs::write(
             root.join("policies/production.yaml"),
-            r#"
+            r"
 id: production
 helper:
   require_signed_lease: true
   reject_replay: true
-"#,
+",
         )
         .expect("policy fixture written");
         fs::write(
             root.join("allowlists/allow-sshd-restart.yaml"),
-            r#"
+            r"
 id: allow-sshd-restart
 action: service.restart
 target_resource_id: system:node/prod-web-01/service/sshd
-"#,
+",
         )
         .expect("allowlist fixture written");
         fs::write(
             root.join("overlays/global.yaml"),
-            r#"
+            r"
 tier: global
 settings:
   policy.profile: baseline
-"#,
+",
         )
         .expect("overlay fixture written");
 

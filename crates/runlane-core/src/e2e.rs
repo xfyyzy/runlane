@@ -1,16 +1,18 @@
 use std::path::Path;
 
 use crate::{
-    ActionKind, ActionTarget, AgentResultStatus, AgentResultSubmission, AgentTaskEnvelope,
-    AuditEvent, AuditEventKind, AuditLedger, Capability, CapabilityReport, EvidenceEnvelope,
-    HelperActionRequest, HelperActionResponse, HelperActionStatus, HelperAllowlist,
-    HelperAllowlistEntry, HelperArgument, HelperValidationContext, LeaseMode, LeaseSignatureStatus,
-    SignedCapabilityLease, VerificationPlanner, VerificationPolicy,
+    ActionKind, ActionTarget, AgentIdentity, AgentResultStatus, AgentResultSubmission,
+    AgentTaskEnvelope, AuditEvent, AuditEventKind, AuditLedger, Capability, CapabilityLeaseClaims,
+    CapabilityReport, EvidenceEnvelope, HelperActionRequest, HelperActionResponse,
+    HelperActionStatus, HelperAllowlist, HelperAllowlistEntry, HelperArgument,
+    HelperValidationContext, ImpactSet, LeaseMode, LeaseSignatureStatus, SignedCapabilityLease,
+    SkippedVerification, Task, VerificationPlanner, VerificationPolicy,
     analyzer::{
-        ProposalPolicy, analyze_disk_pressure, analyze_service_unhealthy, validate_proposal,
+        ProposalPolicy, StructuredProposal, analyze_disk_pressure, analyze_service_unhealthy,
+        validate_proposal,
     },
     approval::{ApprovalRecord, ApprovalStore},
-    fleet::FleetRepository,
+    fleet::{FleetInventoryNode, FleetRepository},
     receipt::{OperatorReceipt, generate_operator_receipt},
     runtime::{
         AgentEnrollmentRequest, ControlPlane, EnrollmentToken, PendingAgentTask, TypedTaskPayload,
@@ -82,312 +84,58 @@ pub fn run_service_unhealthy_simulation(
 ) -> Result<ServiceUnhealthySimulation, E2eError> {
     let run_id = "run-demo-service-unhealthy";
     let incident_id = "incident-demo-service-unhealthy";
-    let fleet =
-        FleetRepository::load(fleet_path).map_err(|error| E2eError::Fleet(error.to_string()))?;
-    let mut ledger = AuditLedger::empty();
-    append(
-        &mut ledger,
-        run_id,
-        AuditEventKind::IncidentCreated {
-            incident_id: incident_id.to_owned(),
-            node_id: "prod-web-01".to_owned(),
-            runbook: "service-unhealthy".to_owned(),
-        },
-    )?;
-
+    let fleet = load_fleet(fleet_path)?;
+    let mut ledger = incident_ledger(run_id, incident_id, "prod-web-01", "service-unhealthy")?;
     let mut control_plane = ControlPlane::empty();
-    for node in &fleet.inventory {
-        control_plane
-            .create_enrollment_token(EnrollmentToken::new(
-                format!("token-{}", node.id),
-                format!("enroll-{}", node.id),
-                node.id.clone(),
-                node.os,
-                "demo-trust-root",
-                200,
-                format!("enroll-nonce-{}", node.id),
-            ))
-            .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
-        control_plane
-            .enroll_agent(&AgentEnrollmentRequest::new(
-                format!("enroll-{}", node.id),
-                node.id.clone(),
-                node.os,
-                format!("cert-{}", node.id),
-                "demo-trust-root",
-                100,
-            ))
-            .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
-    }
+    enroll_fleet_agents(&mut control_plane, &fleet, EnrollmentLabels::service())?;
 
-    let target = fleet
-        .inventory
-        .iter()
-        .find(|node| node.id == "prod-web-01")
-        .ok_or_else(|| E2eError::Fleet("examples/fleet missing prod-web-01".to_owned()))?;
-    let report = CapabilityReport::new(
-        target.id.clone(),
-        target.os,
-        target
-            .requested_capabilities
-            .iter()
-            .cloned()
-            .map(Capability::new),
-        [],
-    );
+    let target = target_node(&fleet, "prod-web-01")?;
+    let report = capability_report(target);
     let plan = crate::plan_service_unhealthy_runbook(
         &crate::ServiceUnhealthyRunbookRequest::new(run_id, &target.id, "sshd"),
         &report,
     )
     .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
 
-    let identity = control_plane
-        .agents()
-        .iter()
-        .find(|agent| agent.node_id == target.id)
-        .ok_or_else(|| E2eError::Planning("target agent was not enrolled".to_owned()))?
-        .identity();
-    for (index, task) in plan
-        .run
-        .tasks
-        .iter()
-        .filter(|task| task.id.starts_with("collect-"))
-        .enumerate()
-    {
-        let capability = task
-            .required_capabilities
-            .first()
-            .cloned()
-            .ok_or_else(|| E2eError::Planning(format!("{} missing capability", task.id)))?;
-        let resource_id = task
-            .reads
-            .first()
-            .cloned()
-            .ok_or_else(|| E2eError::Planning(format!("{} missing read resource", task.id)))?;
-        control_plane.enqueue_task(PendingAgentTask::new(
-            AgentTaskEnvelope::new(
-                format!("env-demo-{}", task.id),
-                run_id,
-                &task.id,
-                &target.id,
-                100,
-                200,
-                format!("nonce-demo-{}", task.id),
-                task.required_capabilities.clone(),
-                format!("audit-demo-{}", task.id),
-            ),
-            TypedTaskPayload::CollectEvidence {
-                capability,
-                resource_id,
-            },
-        ));
-        let pulled = control_plane
-            .pull_task(&identity, 101 + index as u64)
-            .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
-        if !matches!(pulled.payload, TypedTaskPayload::CollectEvidence { .. }) {
-            return Err(E2eError::Planning(format!(
-                "{} pulled non-evidence payload",
-                pulled.envelope.task_id
-            )));
-        }
-        let evidence = evidence_for_collect_task(&pulled.envelope.task_id)?;
-        control_plane
-            .submit_result(
-                &identity,
-                AgentResultSubmission::new(
-                    &pulled.envelope.envelope_id,
-                    &pulled.envelope.run_id,
-                    &pulled.envelope.task_id,
-                    &pulled.envelope.node_id,
-                    &pulled.envelope.nonce,
-                    AgentResultStatus::Succeeded,
-                    [evidence],
-                    &pulled.envelope.audit_correlation_id,
-                ),
-                110 + index as u64,
-            )
-            .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
-    }
-    let evidence: Vec<EvidenceEnvelope> = control_plane
-        .accepted_results
-        .iter()
-        .filter(|result| result.run_id == run_id && result.status == AgentResultStatus::Succeeded)
-        .flat_map(|result| result.evidence.clone())
-        .collect();
-    if evidence.len() != 5 {
-        return Err(E2eError::Planning(format!(
-            "expected 5 evidence results, got {}",
-            evidence.len()
-        )));
-    }
-    append_runtime_events(&mut ledger, run_id, control_plane.ledger.events())?;
-    for evidence in &evidence {
-        append(
-            &mut ledger,
-            run_id,
-            AuditEventKind::EvidenceCollected {
-                source: evidence.source.clone(),
-            },
-        )?;
-    }
-
-    let proposal = analyze_service_unhealthy(
-        "proposal-demo-service-unhealthy",
+    let identity = enrolled_identity(&control_plane, &target.id)?;
+    let evidence = collect_evidence(
+        &mut control_plane,
+        &identity,
+        run_id,
         &target.id,
-        "sshd",
-        &evidence,
-    );
-    validate_proposal(&proposal, &ProposalPolicy::service_unhealthy())
-        .map_err(|error| E2eError::Proposal(format!("{error:?}")))?;
-    append(
-        &mut ledger,
-        run_id,
-        AuditEventKind::ProposalGenerated {
-            proposal_id: proposal.id.clone(),
-            hypothesis: proposal.hypothesis.clone(),
-        },
+        &plan.run.tasks,
+        evidence_for_collect_task,
     )?;
+    append_observed_evidence(&mut ledger, run_id, &control_plane, &evidence)?;
 
-    let restart_task = plan
-        .run
-        .tasks
-        .iter()
-        .find(|task| task.id == "restart-service")
-        .ok_or_else(|| E2eError::Planning("restart-service task missing".to_owned()))?;
-    let mut approvals = ApprovalStore::empty();
-    approvals
-        .request(ApprovalRecord::new(
-            "approval-demo-service-unhealthy",
-            run_id,
-            &proposal,
-            "restart-service",
-            crate::OperationalLayer::System,
-            "sshd",
-            restart_task.impact.clone(),
-            restart_task.verification.clone(),
-            120,
-            200,
-        ))
-        .map_err(|error| E2eError::Approval(format!("{error:?}")))?;
-    let claims = approvals
-        .approve(
-            "approval-demo-service-unhealthy",
-            "restart-service",
-            "operator",
-            150,
-            "allow-prod-web-sshd-restart",
-            "lease-nonce-demo",
-        )
-        .map_err(|error| E2eError::Approval(format!("{error:?}")))?;
-    append_runtime_events(&mut ledger, run_id, approvals.ledger.events())?;
-    append(
+    let proposal = service_unhealthy_proposal(&mut ledger, run_id, &target.id, &evidence)?;
+    let restart_task = require_task(&plan.run.tasks, "restart-service")?;
+    let claims = approve_action(
         &mut ledger,
         run_id,
-        AuditEventKind::CapabilityLeaseIssued {
-            lease_id: claims.lease_id.clone(),
-            approval_id: claims.approval_id.clone(),
-        },
+        &proposal,
+        restart_task,
+        ApprovalFixture::service_unhealthy(),
     )?;
-    append(
+    validate_helper_action(
         &mut ledger,
         run_id,
-        AuditEventKind::ResourceLeaseGranted {
-            lease_id: claims.lease_id.clone(),
-            resource_id: claims.target.resource_id.clone(),
-            mode: LeaseMode::Exclusive,
-        },
+        &claims,
+        &ActionKind::ServiceRestart,
+        HelperFixture::service_unhealthy(),
     )?;
-
-    let signed = SignedCapabilityLease::new(claims.clone(), "demo-key", "demo-signature");
-    let request = HelperActionRequest::new(
-        &claims.lease_id,
-        ActionKind::ServiceRestart,
-        ActionTarget::new(&claims.target.resource_id, "sshd"),
-        [HelperArgument::new("service", "sshd")],
-    );
-    let allowlist = HelperAllowlist::new([HelperAllowlistEntry::new(
-        "allow-prod-web-sshd-restart",
-        ActionKind::ServiceRestart,
-        &claims.target.resource_id,
-    )]);
-    validate_helper_request(
-        &request,
-        &signed,
-        &HelperValidationContext::new(
-            "prod-web-01",
-            150,
-            LeaseSignatureStatus::Valid,
-            [],
-            allowlist,
-        ),
-    )
-    .map_err(|error| E2eError::Helper(format!("{error:?}")))?;
-    let helper_response = HelperActionResponse::new(
-        HelperActionStatus::Succeeded,
-        "dry-run service.restart validated",
-    );
-    append(
+    record_verification(
         &mut ledger,
         run_id,
-        AuditEventKind::ActionResult {
-            action: ActionKind::ServiceRestart,
-            target: ActionTarget::new(&claims.target.resource_id, "sshd"),
-            status: helper_response.status,
-        },
+        &ActionKind::ServiceRestart,
+        &restart_task.impact,
+        &restart_task.verification.skipped,
     )?;
-
-    let verification = VerificationPlanner::new(VerificationPolicy::minimal())
-        .plan(&ActionKind::ServiceRestart, &restart_task.impact)
-        .with_skipped(restart_task.verification.skipped.clone());
-    append(
-        &mut ledger,
-        run_id,
-        AuditEventKind::VerificationSelected {
-            plan: verification.clone(),
-        },
-    )?;
-    for check in &verification.required {
-        append(
-            &mut ledger,
-            run_id,
-            AuditEventKind::VerificationCompleted {
-                check_id: check.id.clone(),
-                resource_id: check.resource_id.clone(),
-            },
-        )?;
-    }
-    for skipped in &verification.skipped {
-        append(
-            &mut ledger,
-            run_id,
-            AuditEventKind::VerificationSkipped {
-                skipped: skipped.clone(),
-            },
-        )?;
-    }
-
-    let receipt = generate_operator_receipt(run_id, &ledger)
-        .map_err(|error| E2eError::Receipt(format!("{error:?}")))?;
-    append(
-        &mut ledger,
-        run_id,
-        AuditEventKind::CognitiveReceiptGenerated {
-            receipt_id: "receipt-demo-service-unhealthy".to_owned(),
-        },
-    )?;
+    let receipt = finish_receipt(&mut ledger, run_id, "receipt-demo-service-unhealthy")?;
 
     Ok(ServiceUnhealthySimulation {
         run_id: run_id.to_owned(),
-        stages: vec![
-            JourneyStage::Declare,
-            JourneyStage::Observe,
-            JourneyStage::Propose,
-            JourneyStage::Approve,
-            JourneyStage::Lease,
-            JourneyStage::Execute,
-            JourneyStage::Verify,
-            JourneyStage::Remember,
-        ],
+        stages: journey_stages(),
         receipt,
         ledger,
     })
@@ -401,59 +149,17 @@ pub fn run_disk_pressure_simulation(
     let incident_id = "incident-demo-disk-pressure";
     let cleanup_resource_id = "system:node/prod-web-01/path/var-tmp-runlane-demo-cache";
     let cleanup_subject = "/var/tmp/runlane-demo-cache";
-    let fleet =
-        FleetRepository::load(fleet_path).map_err(|error| E2eError::Fleet(error.to_string()))?;
-    let mut ledger = AuditLedger::empty();
-    append(
-        &mut ledger,
-        run_id,
-        AuditEventKind::IncidentCreated {
-            incident_id: incident_id.to_owned(),
-            node_id: "prod-web-01".to_owned(),
-            runbook: "disk-pressure".to_owned(),
-        },
+    let fleet = load_fleet(fleet_path)?;
+    let mut ledger = incident_ledger(run_id, incident_id, "prod-web-01", "disk-pressure")?;
+    let mut control_plane = ControlPlane::empty();
+    enroll_fleet_agents(
+        &mut control_plane,
+        &fleet,
+        EnrollmentLabels::disk_pressure(),
     )?;
 
-    let mut control_plane = ControlPlane::empty();
-    for node in &fleet.inventory {
-        control_plane
-            .create_enrollment_token(EnrollmentToken::new(
-                format!("token-disk-{}", node.id),
-                format!("enroll-disk-{}", node.id),
-                node.id.clone(),
-                node.os,
-                "demo-trust-root",
-                200,
-                format!("enroll-disk-nonce-{}", node.id),
-            ))
-            .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
-        control_plane
-            .enroll_agent(&AgentEnrollmentRequest::new(
-                format!("enroll-disk-{}", node.id),
-                node.id.clone(),
-                node.os,
-                format!("cert-disk-{}", node.id),
-                "demo-trust-root",
-                100,
-            ))
-            .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
-    }
-
-    let target = fleet
-        .inventory
-        .iter()
-        .find(|node| node.id == "prod-web-01")
-        .ok_or_else(|| E2eError::Fleet("examples/fleet missing prod-web-01".to_owned()))?;
-    let report = CapabilityReport::new(
-        target.id.clone(),
-        target.os,
-        target
-            .requested_capabilities
-            .iter()
-            .cloned()
-            .map(Capability::new),
-        [],
-    );
+    let target = target_node(&fleet, "prod-web-01")?;
+    let report = capability_report(target);
     let plan = crate::plan_disk_pressure_runbook(
         &crate::DiskPressureRunbookRequest::new(
             run_id,
@@ -466,53 +172,284 @@ pub fn run_disk_pressure_simulation(
     )
     .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
 
-    let identity = control_plane
+    let identity = enrolled_identity(&control_plane, &target.id)?;
+    let evidence = collect_evidence(
+        &mut control_plane,
+        &identity,
+        run_id,
+        &target.id,
+        &plan.run.tasks,
+        disk_pressure_evidence_for_collect_task,
+    )?;
+    append_observed_evidence(&mut ledger, run_id, &control_plane, &evidence)?;
+
+    let proposal = disk_pressure_proposal(
+        &mut ledger,
+        run_id,
+        &target.id,
+        cleanup_resource_id,
+        &evidence,
+        &fleet,
+    )?;
+    let cleanup_task = require_task(&plan.run.tasks, "cleanup-allowlisted-path")?;
+    let claims = approve_action(
+        &mut ledger,
+        run_id,
+        &proposal,
+        cleanup_task,
+        ApprovalFixture::disk_pressure(cleanup_subject),
+    )?;
+    validate_helper_action(
+        &mut ledger,
+        run_id,
+        &claims,
+        &ActionKind::RemoveAllowlistedFile,
+        HelperFixture::disk_pressure(cleanup_subject),
+    )?;
+    record_verification(
+        &mut ledger,
+        run_id,
+        &ActionKind::RemoveAllowlistedFile,
+        &cleanup_task.impact,
+        &cleanup_task.verification.skipped,
+    )?;
+    let receipt = finish_receipt(&mut ledger, run_id, "receipt-demo-disk-pressure")?;
+
+    Ok(DiskPressureSimulation {
+        run_id: run_id.to_owned(),
+        stages: journey_stages(),
+        receipt,
+        ledger,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EnrollmentLabels {
+    token: &'static str,
+    enrollment: &'static str,
+    certificate: &'static str,
+    nonce: &'static str,
+}
+
+impl EnrollmentLabels {
+    const fn service() -> Self {
+        Self {
+            token: "token",
+            enrollment: "enroll",
+            certificate: "cert",
+            nonce: "enroll-nonce",
+        }
+    }
+
+    const fn disk_pressure() -> Self {
+        Self {
+            token: "token-disk",
+            enrollment: "enroll-disk",
+            certificate: "cert-disk",
+            nonce: "enroll-disk-nonce",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ApprovalFixture<'a> {
+    approval_id: &'a str,
+    action_id: &'a str,
+    subject: &'a str,
+    allowlist_entry_id: &'a str,
+    lease_nonce: &'a str,
+}
+
+impl<'a> ApprovalFixture<'a> {
+    const fn service_unhealthy() -> Self {
+        Self {
+            approval_id: "approval-demo-service-unhealthy",
+            action_id: "restart-service",
+            subject: "sshd",
+            allowlist_entry_id: "allow-prod-web-sshd-restart",
+            lease_nonce: "lease-nonce-demo",
+        }
+    }
+
+    const fn disk_pressure(cleanup_subject: &'a str) -> Self {
+        Self {
+            approval_id: "approval-demo-disk-pressure",
+            action_id: "remove-allowlisted-cleanup-path",
+            subject: cleanup_subject,
+            allowlist_entry_id: "allow-prod-web-runlane-demo-cache-cleanup",
+            lease_nonce: "lease-nonce-demo-disk-pressure",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HelperFixture<'a> {
+    node_id: &'a str,
+    subject: &'a str,
+    argument_name: &'a str,
+    argument_value: &'a str,
+    allowlist_entry_id: &'a str,
+    success_message: &'a str,
+}
+
+impl<'a> HelperFixture<'a> {
+    const fn service_unhealthy() -> Self {
+        Self {
+            node_id: "prod-web-01",
+            subject: "sshd",
+            argument_name: "service",
+            argument_value: "sshd",
+            allowlist_entry_id: "allow-prod-web-sshd-restart",
+            success_message: "dry-run service.restart validated",
+        }
+    }
+
+    const fn disk_pressure(cleanup_subject: &'a str) -> Self {
+        Self {
+            node_id: "prod-web-01",
+            subject: cleanup_subject,
+            argument_name: "path",
+            argument_value: cleanup_subject,
+            allowlist_entry_id: "allow-prod-web-runlane-demo-cache-cleanup",
+            success_message: "dry-run file.remove_from_allowlist validated",
+        }
+    }
+}
+
+fn journey_stages() -> Vec<JourneyStage> {
+    vec![
+        JourneyStage::Declare,
+        JourneyStage::Observe,
+        JourneyStage::Propose,
+        JourneyStage::Approve,
+        JourneyStage::Lease,
+        JourneyStage::Execute,
+        JourneyStage::Verify,
+        JourneyStage::Remember,
+    ]
+}
+
+fn load_fleet(fleet_path: impl AsRef<Path>) -> Result<FleetRepository, E2eError> {
+    FleetRepository::load(fleet_path).map_err(|error| E2eError::Fleet(error.to_string()))
+}
+
+fn incident_ledger(
+    run_id: &str,
+    incident_id: &str,
+    node_id: &str,
+    runbook: &str,
+) -> Result<AuditLedger, E2eError> {
+    let mut ledger = AuditLedger::empty();
+    append(
+        &mut ledger,
+        run_id,
+        AuditEventKind::IncidentCreated {
+            incident_id: incident_id.to_owned(),
+            node_id: node_id.to_owned(),
+            runbook: runbook.to_owned(),
+        },
+    )?;
+    Ok(ledger)
+}
+
+fn enroll_fleet_agents(
+    control_plane: &mut ControlPlane,
+    fleet: &FleetRepository,
+    labels: EnrollmentLabels,
+) -> Result<(), E2eError> {
+    for node in &fleet.inventory {
+        control_plane
+            .create_enrollment_token(EnrollmentToken::new(
+                format!("{}-{}", labels.token, node.id),
+                format!("{}-{}", labels.enrollment, node.id),
+                node.id.clone(),
+                node.os,
+                "demo-trust-root",
+                200,
+                format!("{}-{}", labels.nonce, node.id),
+            ))
+            .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
+        control_plane
+            .enroll_agent(&AgentEnrollmentRequest::new(
+                format!("{}-{}", labels.enrollment, node.id),
+                node.id.clone(),
+                node.os,
+                format!("{}-{}", labels.certificate, node.id),
+                "demo-trust-root",
+                100,
+            ))
+            .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
+    }
+    Ok(())
+}
+
+fn target_node<'a>(
+    fleet: &'a FleetRepository,
+    node_id: &str,
+) -> Result<&'a FleetInventoryNode, E2eError> {
+    fleet
+        .inventory
+        .iter()
+        .find(|node| node.id == node_id)
+        .ok_or_else(|| E2eError::Fleet(format!("examples/fleet missing {node_id}")))
+}
+
+fn capability_report(target: &FleetInventoryNode) -> CapabilityReport {
+    CapabilityReport::new(
+        target.id.clone(),
+        target.os,
+        target
+            .requested_capabilities
+            .iter()
+            .cloned()
+            .map(Capability::new),
+        [],
+    )
+}
+
+fn enrolled_identity(
+    control_plane: &ControlPlane,
+    node_id: &str,
+) -> Result<AgentIdentity, E2eError> {
+    control_plane
         .agents()
         .iter()
-        .find(|agent| agent.node_id == target.id)
-        .ok_or_else(|| E2eError::Planning("target agent was not enrolled".to_owned()))?
-        .identity();
-    for (index, task) in plan
-        .run
-        .tasks
+        .find(|agent| agent.node_id == node_id)
+        .ok_or_else(|| E2eError::Planning("target agent was not enrolled".to_owned()))
+        .map(crate::runtime::AgentIdentityRecord::identity)
+}
+
+fn collect_evidence(
+    control_plane: &mut ControlPlane,
+    identity: &AgentIdentity,
+    run_id: &str,
+    target_id: &str,
+    tasks: &[Task],
+    evidence_for_task: fn(&str) -> Result<EvidenceEnvelope, E2eError>,
+) -> Result<Vec<EvidenceEnvelope>, E2eError> {
+    let expected_count = tasks
+        .iter()
+        .filter(|task| task.id.starts_with("collect-"))
+        .count();
+    for (index, task) in tasks
         .iter()
         .filter(|task| task.id.starts_with("collect-"))
         .enumerate()
     {
-        let capability = task
-            .required_capabilities
-            .first()
-            .cloned()
-            .ok_or_else(|| E2eError::Planning(format!("{} missing capability", task.id)))?;
-        let resource_id = task
-            .reads
-            .first()
-            .cloned()
-            .ok_or_else(|| E2eError::Planning(format!("{} missing read resource", task.id)))?;
-        control_plane.enqueue_task(PendingAgentTask::new(
-            AgentTaskEnvelope::new(
-                format!("env-demo-{}", task.id),
-                run_id,
-                &task.id,
-                &target.id,
-                100,
-                200,
-                format!("nonce-demo-{}", task.id),
-                task.required_capabilities.clone(),
-                format!("audit-demo-{}", task.id),
-            ),
-            TypedTaskPayload::CollectEvidence {
-                capability,
-                resource_id,
-            },
-        ));
+        enqueue_collect_task(control_plane, run_id, target_id, task)?;
         let pulled = control_plane
-            .pull_task(&identity, 101 + index as u64)
+            .pull_task(identity, 101 + index as u64)
             .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
-        let evidence = disk_pressure_evidence_for_collect_task(&pulled.envelope.task_id)?;
+        if !matches!(pulled.payload, TypedTaskPayload::CollectEvidence { .. }) {
+            return Err(E2eError::Planning(format!(
+                "{} pulled non-evidence payload",
+                pulled.envelope.task_id
+            )));
+        }
+        let evidence = evidence_for_task(&pulled.envelope.task_id)?;
         control_plane
             .submit_result(
-                &identity,
+                identity,
                 AgentResultSubmission::new(
                     &pulled.envelope.envelope_id,
                     &pulled.envelope.run_id,
@@ -527,29 +464,109 @@ pub fn run_disk_pressure_simulation(
             )
             .map_err(|error| E2eError::Planning(format!("{error:?}")))?;
     }
-    let evidence: Vec<EvidenceEnvelope> = control_plane
+    let evidence = accepted_evidence(control_plane, run_id);
+    if evidence.len() != expected_count {
+        return Err(E2eError::Planning(format!(
+            "expected {} evidence results, got {}",
+            expected_count,
+            evidence.len()
+        )));
+    }
+    Ok(evidence)
+}
+
+fn enqueue_collect_task(
+    control_plane: &mut ControlPlane,
+    run_id: &str,
+    target_id: &str,
+    task: &Task,
+) -> Result<(), E2eError> {
+    let capability = task
+        .required_capabilities
+        .first()
+        .cloned()
+        .ok_or_else(|| E2eError::Planning(format!("{} missing capability", task.id)))?;
+    let resource_id = task
+        .reads
+        .first()
+        .cloned()
+        .ok_or_else(|| E2eError::Planning(format!("{} missing read resource", task.id)))?;
+    control_plane.enqueue_task(PendingAgentTask::new(
+        AgentTaskEnvelope::new(
+            format!("env-demo-{}", task.id),
+            run_id,
+            &task.id,
+            target_id,
+            100,
+            200,
+            format!("nonce-demo-{}", task.id),
+            task.required_capabilities.clone(),
+            format!("audit-demo-{}", task.id),
+        ),
+        TypedTaskPayload::CollectEvidence {
+            capability,
+            resource_id,
+        },
+    ));
+    Ok(())
+}
+
+fn accepted_evidence(control_plane: &ControlPlane, run_id: &str) -> Vec<EvidenceEnvelope> {
+    control_plane
         .accepted_results
         .iter()
         .filter(|result| result.run_id == run_id && result.status == AgentResultStatus::Succeeded)
         .flat_map(|result| result.evidence.clone())
-        .collect();
-    if evidence.len() != 4 {
-        return Err(E2eError::Planning(format!(
-            "expected 4 evidence results, got {}",
-            evidence.len()
-        )));
-    }
-    append_runtime_events(&mut ledger, run_id, control_plane.ledger.events())?;
-    for evidence in &evidence {
+        .collect()
+}
+
+fn append_observed_evidence(
+    ledger: &mut AuditLedger,
+    run_id: &str,
+    control_plane: &ControlPlane,
+    evidence: &[EvidenceEnvelope],
+) -> Result<(), E2eError> {
+    append_runtime_events(ledger, run_id, control_plane.ledger.events())?;
+    for item in evidence {
         append(
-            &mut ledger,
+            ledger,
             run_id,
             AuditEventKind::EvidenceCollected {
-                source: evidence.source.clone(),
+                source: item.source.clone(),
             },
         )?;
     }
+    Ok(())
+}
 
+fn service_unhealthy_proposal(
+    ledger: &mut AuditLedger,
+    run_id: &str,
+    target_id: &str,
+    evidence: &[EvidenceEnvelope],
+) -> Result<StructuredProposal, E2eError> {
+    let proposal = analyze_service_unhealthy(
+        "proposal-demo-service-unhealthy",
+        target_id,
+        "sshd",
+        evidence,
+    );
+    validate_and_record_proposal(
+        ledger,
+        run_id,
+        proposal,
+        &ProposalPolicy::service_unhealthy(),
+    )
+}
+
+fn disk_pressure_proposal(
+    ledger: &mut AuditLedger,
+    run_id: &str,
+    target_id: &str,
+    cleanup_resource_id: &str,
+    evidence: &[EvidenceEnvelope],
+    fleet: &FleetRepository,
+) -> Result<StructuredProposal, E2eError> {
     let allowed_cleanup_resources = fleet
         .allowlists
         .iter()
@@ -558,57 +575,76 @@ pub fn run_disk_pressure_simulation(
         .collect::<Vec<_>>();
     let proposal = analyze_disk_pressure(
         "proposal-demo-disk-pressure",
-        &target.id,
+        target_id,
         "/",
         cleanup_resource_id,
-        &evidence,
+        evidence,
         &allowed_cleanup_resources,
     );
-    validate_proposal(&proposal, &ProposalPolicy::disk_pressure())
+    validate_and_record_proposal(ledger, run_id, proposal, &ProposalPolicy::disk_pressure())
+}
+
+fn validate_and_record_proposal(
+    ledger: &mut AuditLedger,
+    run_id: &str,
+    proposal: StructuredProposal,
+    policy: &ProposalPolicy,
+) -> Result<StructuredProposal, E2eError> {
+    validate_proposal(&proposal, policy)
         .map_err(|error| E2eError::Proposal(format!("{error:?}")))?;
     append(
-        &mut ledger,
+        ledger,
         run_id,
         AuditEventKind::ProposalGenerated {
             proposal_id: proposal.id.clone(),
             hypothesis: proposal.hypothesis.clone(),
         },
     )?;
+    Ok(proposal)
+}
 
-    let cleanup_task = plan
-        .run
-        .tasks
+fn require_task<'a>(tasks: &'a [Task], task_id: &str) -> Result<&'a Task, E2eError> {
+    tasks
         .iter()
-        .find(|task| task.id == "cleanup-allowlisted-path")
-        .ok_or_else(|| E2eError::Planning("cleanup task missing".to_owned()))?;
+        .find(|task| task.id == task_id)
+        .ok_or_else(|| E2eError::Planning(format!("{task_id} task missing")))
+}
+
+fn approve_action(
+    ledger: &mut AuditLedger,
+    run_id: &str,
+    proposal: &StructuredProposal,
+    task: &Task,
+    fixture: ApprovalFixture<'_>,
+) -> Result<CapabilityLeaseClaims, E2eError> {
     let mut approvals = ApprovalStore::empty();
     approvals
         .request(ApprovalRecord::new(
-            "approval-demo-disk-pressure",
+            fixture.approval_id,
             run_id,
-            &proposal,
-            "remove-allowlisted-cleanup-path",
+            proposal,
+            fixture.action_id,
             crate::OperationalLayer::System,
-            cleanup_subject,
-            cleanup_task.impact.clone(),
-            cleanup_task.verification.clone(),
+            fixture.subject,
+            task.impact.clone(),
+            task.verification.clone(),
             120,
             200,
         ))
         .map_err(|error| E2eError::Approval(format!("{error:?}")))?;
     let claims = approvals
         .approve(
-            "approval-demo-disk-pressure",
-            "remove-allowlisted-cleanup-path",
+            fixture.approval_id,
+            fixture.action_id,
             "operator",
             150,
-            "allow-prod-web-runlane-demo-cache-cleanup",
-            "lease-nonce-demo-disk-pressure",
+            fixture.allowlist_entry_id,
+            fixture.lease_nonce,
         )
         .map_err(|error| E2eError::Approval(format!("{error:?}")))?;
-    append_runtime_events(&mut ledger, run_id, approvals.ledger.events())?;
+    append_runtime_events(ledger, run_id, approvals.ledger.events())?;
     append(
-        &mut ledger,
+        ledger,
         run_id,
         AuditEventKind::CapabilityLeaseIssued {
             lease_id: claims.lease_id.clone(),
@@ -616,7 +652,7 @@ pub fn run_disk_pressure_simulation(
         },
     )?;
     append(
-        &mut ledger,
+        ledger,
         run_id,
         AuditEventKind::ResourceLeaseGranted {
             lease_id: claims.lease_id.clone(),
@@ -624,24 +660,36 @@ pub fn run_disk_pressure_simulation(
             mode: LeaseMode::Exclusive,
         },
     )?;
+    Ok(claims)
+}
 
+fn validate_helper_action(
+    ledger: &mut AuditLedger,
+    run_id: &str,
+    claims: &CapabilityLeaseClaims,
+    action: &ActionKind,
+    fixture: HelperFixture<'_>,
+) -> Result<(), E2eError> {
     let signed = SignedCapabilityLease::new(claims.clone(), "demo-key", "demo-signature");
     let request = HelperActionRequest::new(
         &claims.lease_id,
-        ActionKind::RemoveAllowlistedFile,
-        ActionTarget::new(&claims.target.resource_id, cleanup_subject),
-        [HelperArgument::new("path", cleanup_subject)],
+        action.clone(),
+        ActionTarget::new(&claims.target.resource_id, fixture.subject),
+        [HelperArgument::new(
+            fixture.argument_name,
+            fixture.argument_value,
+        )],
     );
     let allowlist = HelperAllowlist::new([HelperAllowlistEntry::new(
-        "allow-prod-web-runlane-demo-cache-cleanup",
-        ActionKind::RemoveAllowlistedFile,
+        fixture.allowlist_entry_id,
+        action.clone(),
         &claims.target.resource_id,
     )]);
     validate_helper_request(
         &request,
         &signed,
         &HelperValidationContext::new(
-            "prod-web-01",
+            fixture.node_id,
             150,
             LeaseSignatureStatus::Valid,
             [],
@@ -649,25 +697,31 @@ pub fn run_disk_pressure_simulation(
         ),
     )
     .map_err(|error| E2eError::Helper(format!("{error:?}")))?;
-    let helper_response = HelperActionResponse::new(
-        HelperActionStatus::Succeeded,
-        "dry-run file.remove_from_allowlist validated",
-    );
+    let helper_response =
+        HelperActionResponse::new(HelperActionStatus::Succeeded, fixture.success_message);
     append(
-        &mut ledger,
+        ledger,
         run_id,
         AuditEventKind::ActionResult {
-            action: ActionKind::RemoveAllowlistedFile,
-            target: ActionTarget::new(&claims.target.resource_id, cleanup_subject),
+            action: action.clone(),
+            target: ActionTarget::new(&claims.target.resource_id, fixture.subject),
             status: helper_response.status,
         },
-    )?;
+    )
+}
 
+fn record_verification(
+    ledger: &mut AuditLedger,
+    run_id: &str,
+    action: &ActionKind,
+    impact: &ImpactSet,
+    skipped: &[SkippedVerification],
+) -> Result<(), E2eError> {
     let verification = VerificationPlanner::new(VerificationPolicy::minimal())
-        .plan(&ActionKind::RemoveAllowlistedFile, &cleanup_task.impact)
-        .with_skipped(cleanup_task.verification.skipped.clone());
+        .plan(action, impact)
+        .with_skipped(skipped.iter().cloned());
     append(
-        &mut ledger,
+        ledger,
         run_id,
         AuditEventKind::VerificationSelected {
             plan: verification.clone(),
@@ -675,7 +729,7 @@ pub fn run_disk_pressure_simulation(
     )?;
     for check in &verification.required {
         append(
-            &mut ledger,
+            ledger,
             run_id,
             AuditEventKind::VerificationCompleted {
                 check_id: check.id.clone(),
@@ -685,39 +739,31 @@ pub fn run_disk_pressure_simulation(
     }
     for skipped in &verification.skipped {
         append(
-            &mut ledger,
+            ledger,
             run_id,
             AuditEventKind::VerificationSkipped {
                 skipped: skipped.clone(),
             },
         )?;
     }
+    Ok(())
+}
 
-    let receipt = generate_operator_receipt(run_id, &ledger)
+fn finish_receipt(
+    ledger: &mut AuditLedger,
+    run_id: &str,
+    receipt_id: &str,
+) -> Result<OperatorReceipt, E2eError> {
+    let receipt = generate_operator_receipt(run_id, ledger)
         .map_err(|error| E2eError::Receipt(format!("{error:?}")))?;
     append(
-        &mut ledger,
+        ledger,
         run_id,
         AuditEventKind::CognitiveReceiptGenerated {
-            receipt_id: "receipt-demo-disk-pressure".to_owned(),
+            receipt_id: receipt_id.to_owned(),
         },
     )?;
-
-    Ok(DiskPressureSimulation {
-        run_id: run_id.to_owned(),
-        stages: vec![
-            JourneyStage::Declare,
-            JourneyStage::Observe,
-            JourneyStage::Propose,
-            JourneyStage::Approve,
-            JourneyStage::Lease,
-            JourneyStage::Execute,
-            JourneyStage::Verify,
-            JourneyStage::Remember,
-        ],
-        receipt,
-        ledger,
-    })
+    Ok(receipt)
 }
 
 fn append(ledger: &mut AuditLedger, run_id: &str, kind: AuditEventKind) -> Result<(), E2eError> {
