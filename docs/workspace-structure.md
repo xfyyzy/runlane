@@ -11,12 +11,15 @@ Runlane currently uses the latest stable Rust toolchain as the minimum supported
 
 ```text
 runlane/
+├── .cargo/
+│   └── config.toml
 ├── Cargo.toml
 ├── crates/
 │   ├── runlane-core/
 │   ├── runlane-agent/
 │   ├── runlane-server/
 │   └── runlane-helper/
+├── xtask/
 ├── docs/
 │   ├── architecture.md
 │   ├── workspace-structure.md
@@ -95,6 +98,21 @@ Owns:
 
 The helper should be the most conservative crate. Keep the command surface tiny.
 
+### `xtask`
+
+Repository maintenance and validation command runner.
+
+Owns:
+
+- smoke discovery;
+- safe local smoke aggregation;
+- explicit host-mutating and VM smoke invocation;
+- stable wrappers around `scripts/smoke/*.sh`.
+
+Rule: `xtask` may orchestrate repository tools and scripts, but it must not
+hide host mutation behind broad or implicit commands. Executing host-mutating
+smokes must require exact names and an explicit confirmation flag.
+
 ## Dependency stance
 
 Start boring:
@@ -136,8 +154,10 @@ For v0.1, `runlane-server` and `runlane-agent` can expose CLI subcommands direct
 - Fixture-test platform command parsers.
 - Integration-test server/agent pull loop on localhost.
 - Contract-test helper lease verification.
-- Current CI runs Ubuntu Rust `fmt`, `check`, and `test`; do not claim broader
-  CI coverage without adding a workflow that executes it.
+- Current CI runs Ubuntu Rust `fmt`, `check`, `clippy`, and `test`; do not
+  claim broader CI coverage without adding a workflow that executes it.
+- Use `cargo xtask smoke list` to discover smoke checks and
+  `cargo xtask smoke safe` for non-root local smoke validation.
 - Use fake platform backends and parser fixtures in CI.
 - Run Linux native collector smoke, FreeBSD backend checks, and OpenBSD backend
   checks locally or via VM until dedicated CI workflows exist.

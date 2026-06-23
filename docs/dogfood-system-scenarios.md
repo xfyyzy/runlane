@@ -80,9 +80,10 @@ The Linux real-host dogfood smoke bridges from that fixture path to native host
 evidence without restarting a production service:
 
 ```bash
-scripts/smoke/linux-service-unhealthy-dogfood.sh
+cargo xtask smoke linux-service-unhealthy-dogfood --confirm-host-mutation
 ```
 
+The smoke runner invokes `scripts/smoke/linux-service-unhealthy-dogfood.sh`.
 The script creates only the fixed controlled systemd unit
 `runlane-demo-unhealthy.service`, intentionally starts it into a failed state,
 runs the native Linux collectors, validates the typed helper request in dry-run

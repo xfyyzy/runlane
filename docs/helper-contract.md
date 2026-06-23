@@ -125,10 +125,11 @@ A real Linux install smoke exercises the sudo boundary through an installed
 root-owned helper:
 
 ```bash
-RUNLANE_HELPER_SMOKE_USER=runlane scripts/smoke/linux-helper-install.sh
+cargo xtask smoke linux-helper-install --confirm-host-mutation
 ```
 
-The smoke builds `runlane-helper` in release mode, installs it at
+The smoke runner invokes `scripts/smoke/linux-helper-install.sh`. The script
+builds `runlane-helper` in release mode, installs it at
 `/usr/local/libexec/runlane-helper`, installs the fixture allowlist at
 `/etc/runlane/helper-allowlist.yaml`, writes this sudoers fragment, validates it
 with `visudo`, then invokes the installed helper through `sudo -n` as the smoke

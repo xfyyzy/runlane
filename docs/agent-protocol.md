@@ -292,7 +292,7 @@ validates JSON responses, validates a missing-identity fail-closed response,
 and tears the server down:
 
 ```bash
-scripts/smoke/live-http-transport.sh
+cargo xtask smoke http
 ```
 
 Expected terminal evidence ends with:
