@@ -141,6 +141,7 @@ crates/
 ├── runlane-agent/     # node-side pull worker, platform adapters later
 ├── runlane-server/    # control-plane API/scheduler/audit later
 └── runlane-helper/    # narrow privileged helper, invoked by sudo/doas later
+xtask/                 # repository maintenance and smoke command runner
 ```
 
 ## Important docs
@@ -181,6 +182,20 @@ cargo test --workspace
 Current CI requires the Ubuntu Rust `fmt`, `check`, `clippy`, and `test` job
 plus the PR policy check. Cross-build and VM validation are not part of current CI; report
 them as local/manual checks using [`docs/verification-matrix.md`](docs/verification-matrix.md).
+
+Use the project-owned smoke runner to discover and invoke validation smokes:
+
+```bash
+cargo xtask smoke list
+cargo xtask smoke safe
+cargo xtask smoke <name> --dry-run
+```
+
+`cargo xtask smoke safe` runs only non-root local smokes. To execute
+host-mutating or VM smokes, such as helper installation and BSD VM validation,
+use their exact name plus `--confirm-host-mutation`; the runner prints side
+effects before execution and keeps the underlying `scripts/smoke/*.sh` checks
+intact. Use `--dry-run` to print those commands without executing them.
 
 Cross-platform validation must keep build and runtime baselines aligned. Linux
 and FreeBSD release artifacts may be cross-built when the target sysroot and
@@ -277,7 +292,7 @@ Exercise the Telegram approval adapter without committing or printing Telegram
 secrets:
 
 ```bash
-scripts/smoke/telegram-approval-live-simulated.sh
+cargo xtask smoke telegram-live-simulated
 ```
 
 This is a live-simulated approval-channel smoke. It feeds Telegram-shaped
@@ -292,15 +307,14 @@ blocked.
 Run the full CI-safe service-unhealthy simulation and render its receipt:
 
 ```bash
-cargo run -p runlane -- demo service-unhealthy examples/fleet
-cargo run -p runlane -- receipt show run-demo-service-unhealthy examples/fleet
+cargo xtask smoke e2e
 ```
 
 Run the controlled Linux real-host service-unhealthy dogfood smoke on a
 Linux/systemd host with passwordless sudo:
 
 ```bash
-scripts/smoke/linux-service-unhealthy-dogfood.sh
+cargo xtask smoke linux-service-unhealthy-dogfood --confirm-host-mutation
 ```
 
 The script creates only `runlane-demo-unhealthy.service`, collects native host

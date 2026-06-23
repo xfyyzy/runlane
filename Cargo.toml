@@ -5,6 +5,7 @@ members = [
     "crates/runlane-agent",
     "crates/runlane-server",
     "crates/runlane-helper",
+    "xtask",
 ]
 resolver = "3"
 

@@ -377,7 +377,7 @@ The controlled Linux real-host dogfood path uses the same receipt shape after
 collecting native host evidence from a fixed failing demo service:
 
 ```bash
-scripts/smoke/linux-service-unhealthy-dogfood.sh
+cargo xtask smoke linux-service-unhealthy-dogfood --confirm-host-mutation
 ```
 
 That smoke persists runtime truth to a temporary local state directory and then

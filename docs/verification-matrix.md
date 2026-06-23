@@ -52,18 +52,24 @@ fi
 
 ## Recommended Local Smoke
 
+Use `cargo xtask smoke list` to discover the project-owned smoke surface. Use
+`cargo xtask smoke safe` for the non-root local smoke suite. To execute
+host-mutating and VM smokes, use their exact name plus
+`--confirm-host-mutation`; use `--dry-run` to print the command and side
+effects without executing it.
+
 Use targeted smoke commands when the change touches the corresponding surface:
 
 | Surface | Smoke command examples |
 |---|---|
-| Fleet parsing or examples | `cargo run -p runlane -- fleet validate examples/fleet` and `cargo run -p runlane -- server gitops sync examples/fleet` |
-| Agent/server pull loop | `cargo run -p runlane-server -- demo-control-plane` and `cargo run -p runlane-agent -- demo-enroll-pull` |
-| Agent/server HTTP transport | `cargo test -p runlane-server http -- --nocapture` and `scripts/smoke/live-http-transport.sh`, which starts `runlane-server http demo-serve` on loopback, exercises enrollment/pull/result/spool replay, validates JSON, checks a missing-identity fail-closed response, and tears the server down |
+| Fleet parsing or examples | `cargo xtask smoke fleet` |
+| Agent/server pull loop | `cargo xtask smoke control-plane` |
+| Agent/server HTTP transport | `cargo test -p runlane-server http -- --nocapture` and `cargo xtask smoke http`, which starts `runlane-server http demo-serve` on loopback, exercises enrollment/pull/result/spool replay, validates JSON, checks a missing-identity fail-closed response, and tears the server down |
 | Agent native collectors | `cargo test -p runlane-agent platform -- --nocapture` and `cargo run -p runlane-agent -- collect-smoke --service sshd` |
-| Approval API/CLI | `cargo run -p runlane -- approval list`, `show`, `approve`, and `reject`; for Telegram adapter approval-channel evidence, run `scripts/smoke/telegram-approval-live-simulated.sh` and report whether the result was live Telegram, live-simulated, or blocked |
-| Helper boundary | `cargo run -p runlane-helper -- --help`, `cargo run -p runlane-helper -- preflight --helper-binary target/debug/runlane-helper --allowlist-file examples/helper-smoke/allowlist.yaml --expected-owner-uid "$(id -u)" --expected-mode "$(stat -c %a target/debug/runlane-helper)"`, `cargo run -p runlane-helper -- dry-run-smoke --lease-file examples/helper-smoke/lease-valid.yaml --request-file examples/helper-smoke/request-restart.yaml --allowlist-file examples/helper-smoke/allowlist.yaml --node-id prod-web-01 --now 1780000000`, and `RUNLANE_HELPER_SMOKE_USER=runlane scripts/smoke/linux-helper-install.sh` when a real Linux sudo install boundary is in scope; include one rejection fixture when helper request logic changes |
-| E2E receipt path | `cargo run -p runlane -- demo service-unhealthy examples/fleet`, `cargo run -p runlane -- receipt show run-demo-service-unhealthy examples/fleet`, `cargo run -p runlane -- demo disk-pressure examples/fleet`, and `cargo run -p runlane -- receipt show run-demo-disk-pressure examples/fleet` |
-| Linux real-host service-unhealthy dogfood | `scripts/smoke/linux-service-unhealthy-dogfood.sh` on a Linux/systemd host with passwordless sudo for setup and cleanup; the script targets only `runlane-demo-unhealthy.service`, validates helper dry-run behavior, persists local state, and verifies `cargo run -p runlane -- receipt show run-real-host-service-unhealthy <state-dir>` |
+| Approval API/CLI | `cargo run -p runlane -- approval list`, `show`, `approve`, and `reject`; for Telegram adapter approval-channel evidence, run `cargo xtask smoke telegram-live-simulated` and report whether the result was live Telegram, live-simulated, or blocked |
+| Helper boundary | `cargo run -p runlane-helper -- --help`, `cargo run -p runlane-helper -- preflight --helper-binary target/debug/runlane-helper --allowlist-file examples/helper-smoke/allowlist.yaml --expected-owner-uid "$(id -u)" --expected-mode "$(stat -c %a target/debug/runlane-helper)"`, `cargo run -p runlane-helper -- dry-run-smoke --lease-file examples/helper-smoke/lease-valid.yaml --request-file examples/helper-smoke/request-restart.yaml --allowlist-file examples/helper-smoke/allowlist.yaml --node-id prod-web-01 --now 1780000000`, and `cargo xtask smoke linux-helper-install --confirm-host-mutation` when a real Linux sudo install boundary is in scope; include one rejection fixture when helper request logic changes |
+| E2E receipt path | `cargo xtask smoke e2e` |
+| Linux real-host service-unhealthy dogfood | `cargo xtask smoke linux-service-unhealthy-dogfood --confirm-host-mutation` on a Linux/systemd host with passwordless sudo for setup and cleanup; the script targets only `runlane-demo-unhealthy.service`, validates helper dry-run behavior, persists local state, and verifies `cargo run -p runlane -- receipt show run-real-host-service-unhealthy <state-dir>` |
 
 ## Cross-Build And VM Checks
 
@@ -77,8 +83,8 @@ or cross-platform semantics.
 |---|---|---|
 | Linux x86_64 musl | Release artifact or Linux static binary behavior changes | `scripts/release/linux-x86_64-musl.sh`; it checks the `x86_64-unknown-linux-musl` Rust target, builds the workspace in release mode, rejects artifacts with `PT_INTERP` or `DT_NEEDED`, and writes checksums plus `file` output under `target/release-evidence/` |
 | Linux aarch64 musl | aarch64 release artifact or linker/build configuration changes | `cargo build --workspace --target aarch64-unknown-linux-musl --release` plus `codex-assert-static-elf` |
-| FreeBSD x86_64 | FreeBSD backend/helper behavior or FreeBSD release artifact changes | FreeBSD release-aligned cross build using the current stable FreeBSD sysroot, static artifact check, and `scripts/smoke/freebsd-vm-validation.sh` inside a FreeBSD VM when runtime behavior changed; the VM smoke records OS/Rust versions, runs workspace fmt/check/test, server HTTP tests, agent `collect-smoke`, and FreeBSD sudo helper preflight/dry-run/rejection checks |
-| OpenBSD x86_64 | OpenBSD backend/helper behavior or OpenBSD release validation | `scripts/smoke/openbsd-vm-validation.sh` inside a native OpenBSD VM; it records OS/Rust versions, runs workspace fmt/check/test, server HTTP tests, agent `collect-smoke`, and OpenBSD `doas` helper preflight/dry-run/rejection checks |
+| FreeBSD x86_64 | FreeBSD backend/helper behavior or FreeBSD release artifact changes | FreeBSD release-aligned cross build using the current stable FreeBSD sysroot, static artifact check, and `cargo xtask smoke freebsd-vm-validation --confirm-host-mutation` inside a FreeBSD VM when runtime behavior changed; the VM smoke records OS/Rust versions, runs workspace fmt/check/test, server HTTP tests, agent `collect-smoke`, and FreeBSD sudo helper preflight/dry-run/rejection checks |
+| OpenBSD x86_64 | OpenBSD backend/helper behavior or OpenBSD release validation | `cargo xtask smoke openbsd-vm-validation --confirm-host-mutation` inside a native OpenBSD VM; it records OS/Rust versions, runs workspace fmt/check/test, server HTTP tests, agent `collect-smoke`, and OpenBSD `doas` helper preflight/dry-run/rejection checks |
 
 OpenBSD remains a first-class target, but the default project path is native VM
 validation because stable Rust does not currently provide a rustup-installed

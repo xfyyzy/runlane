@@ -55,6 +55,22 @@ check. It does not run release cross-builds or BSD VM smoke. Use
 checks apply to a change, and report checks as run, not run, or blocked with
 real command output or CI links.
 
+## Smoke checks
+
+Use the project-owned smoke runner to discover and invoke validation smokes:
+
+```bash
+cargo xtask smoke list
+cargo xtask smoke safe
+cargo xtask smoke <name> --dry-run
+```
+
+Safe smokes are non-root local checks. To execute host-mutating or VM smokes,
+including helper installation and BSD VM validation, use an exact smoke name
+plus `--confirm-host-mutation`; the runner prints side effects before executing
+the underlying script. Use `--dry-run` to print those commands without
+executing them.
+
 ## Design rules
 
 - Do not add Linux/systemd-only assumptions to core domain types.
